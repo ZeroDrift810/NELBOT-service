@@ -16,8 +16,30 @@ async function react(client: DiscordClient, channel: ChannelId, message: Message
   await client.reactToMessage(`${reaction}`, message, channel)
 }
 
-function notifierMessage(users: string, waitPing: number, role: RoleId): string {
-  return `${users}\nTime to schedule your game! Once your game is scheduled, hit the ⏰. Otherwise, You will be notified again every ${waitPing} hours.\nWhen you're done playing, let me know with 🏆 and I will clean up the channel.\nNeed to sim this game? React with ⏭ AND the home/away request a force win from <@&${role.id}>. Choose both home and away to fair sim! <@&${role.id}> hit the ⏭ to confirm it!`
+// ✅ This function has been updated with your new message body.
+function notifierMessage(users: string): string {
+    const messageBody = `### 🏈 Time to Schedule Your Game! 🏈
+
+**Scheduling & Results:**
+• Once your game time is set, please react to this message with ⏰.
+• When the game is finished, react with 🏆 to close this channel.
+
+---
+
+**Sim / Force Win Rules:**
+To request an admin-approved result, please follow these steps:
+> 1. **For a Force Win:** The winning player should react with their team's emoji (🏠 for home, ✈️ for away).
+> 2. **For a Fair Sim:** Both players must react (one with 🏠, one with ✈️).
+> 3. **Confirm Request:** Finally, react with ⏭️. An admin must also react with ⏭️ to confirm the result.
+
+---
+
+**League Reminders:**
+• Remember our **4th Down Rules**: <#1415819246373703791>
+• Post your game highlights in <#1415819489626558524>!
+• Streams are posted in <#1415819410022731956>. If you've connected your Twitch, include **NEL** in your stream title for an auto-post!`;
+
+    return `${users}\n${messageBody}`;
 }
 
 enum SnallabotCommandReactions {
@@ -114,8 +136,6 @@ async function createGameChannels(client: DiscordClient, db: Firestore, token: s
     if (!settings.commands.game_channel) {
       return
     }
-    const waitPing = settings.commands.game_channel.wait_ping || 12
-    const role = settings.commands.game_channel.admin
     const gameChannelsWithMessage = await Promise.all(gameChannels.map(async gameChannel => {
       const channel = gameChannel.channel
       const game = gameChannel.game
@@ -126,7 +146,7 @@ async function createGameChannels(client: DiscordClient, db: Firestore, token: s
       const awayTeamStanding = await MaddenClient.getStandingForTeam(leagueId, awayTeamId)
       const homeTeamStanding = await MaddenClient.getStandingForTeam(leagueId, homeTeamId)
       const usersMessage = `${awayUser} (${formatRecord(awayTeamStanding)}) at ${homeUser} (${formatRecord(homeTeamStanding)})`
-      const message = await client.createMessage(channel, notifierMessage(usersMessage, waitPing, role), ["users"])
+      const message = await client.createMessage(channel, notifierMessage(usersMessage), ["users"])
       return { message: message, ...gameChannel }
     }))
     await client.editOriginalInteraction(token, {
