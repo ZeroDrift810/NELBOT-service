@@ -92,6 +92,50 @@ web_modules/
 .env.test.local
 .env.production.local
 .env.local
+.base.env
+
+# Firebase/Google Cloud credentials
+nel-bot-service-account.json
+*service-account*.json
+sa.json
+sa-old.json
+
+# Backups and personal files
+_backups/
+*.backup
+*.bak
+
+# Personal scripts and batch files
+*.cmd
+*.bat
+*.ps1
+config.ps1
+
+# Personal documentation and logs
+BUGS_*.md
+PICKEM_BUGS_FOUND.md
+ALL_BUGS_FIXED_FINAL.md
+FINAL_COMPREHENSIVE_REPORT.md
+POSTLEADERS_ANALYSIS.txt
+SEASON_FIX_SUMMARY.txt
+TIMING_FIX_SUMMARY.txt
+Workflow*.txt
+BOT_COMMANDS*.txt
+
+# Temporary and local files
+fixer/
+images/
+monitor_server.js
+check_week_16.js
+clear-all-commands.js
+register-commands-direct.js
+nul
+
+# Custom emojis (optional - comment out if you want to share these)
+emojis/
+
+# Claude AI workspace
+.claude/
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache

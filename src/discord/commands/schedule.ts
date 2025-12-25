@@ -1,6 +1,8 @@
-import { Command, Autocomplete, MessageComponentInteraction } from "../commands_handler"
-import { DiscordClient, deferMessage, formatTeamEmoji, getSimsForWeek, formatSchedule, getSims, createSimMessageForTeam } from "../discord_utils"
+import { ParameterizedContext } from "koa"
+import { CommandHandler, Command, AutocompleteHandler, Autocomplete, MessageComponentHandler, MessageComponentInteraction } from "../commands_handler"
+import { respond, DiscordClient, deferMessage, formatTeamEmoji, getSimsForWeek, formatSchedule, getSims, createSimMessageForTeam, getTeamOrThrow } from "../discord_utils"
 import { APIApplicationCommandInteractionDataIntegerOption, APIApplicationCommandInteractionDataStringOption, APIApplicationCommandInteractionDataSubcommandOption, APIMessageStringSelectInteractionData, ApplicationCommandOptionType, ApplicationCommandType, ComponentType, InteractionResponseType, RESTPostAPIApplicationCommandsJSONBody, SeparatorSpacingSize } from "discord-api-types/v10"
+import { Firestore } from "firebase-admin/firestore"
 import { GameResult, MADDEN_SEASON, getMessageForWeek, getMessageForWeekShortened } from "../../export/madden_league_types"
 import MaddenClient from "../../db/madden_db"
 import LeagueSettingsDB from "../settings_db"
@@ -14,23 +16,32 @@ export type TeamSelection = { ti: number, si: number }
 async function showSchedule(token: string, client: DiscordClient,
   league: string, requestedWeek?: number, requestedSeason?: number) {
   try {
+    console.log(`📅 showSchedule called: league=${league}, week=${requestedWeek}, season=${requestedSeason}`)
+    console.log(`📅 Fetching schedule and teams...`)
     const settledPromise = await Promise.allSettled([getWeekSchedule(league, requestedWeek != null ? Number(requestedWeek) : undefined, requestedSeason != null ? Number(requestedSeason) : undefined), MaddenClient.getLatestTeams(league)])
+    console.log(`📅 Got settled promises: schedule=${settledPromise[0].status}, teams=${settledPromise[1].status}`)
     const schedule = settledPromise[0].status === "fulfilled" ? settledPromise[0].value : []
     if (settledPromise[1].status !== "fulfilled") {
       throw new Error("No Teams setup, setup the bot and export")
     }
     const teams = settledPromise[1].value
+    console.log(`📅 Fetching logos...`)
     const logos = await leagueLogosView.createView(league)
+    console.log(`📅 Got logos, now sorting schedule...`)
     const sortedSchedule = schedule.sort((a, b) => a.scheduleId - b.scheduleId)
     const season = schedule?.[0]?.seasonIndex >= 0 ? schedule[0].seasonIndex : requestedSeason != null ? requestedSeason : 0
     const week = schedule?.[0]?.weekIndex >= 0 ? schedule[0].weekIndex + 1 : requestedWeek != null ? requestedWeek : 1
+    console.log(`📅 Fetching sims for week=${week}, season=${season}...`)
     const sims = await getSimsForWeek(league, week, season)
+    console.log(`📅 Got sims, formatting schedule...`)
     const message = formatSchedule(week, season, sortedSchedule, teams, sims, logos)
+    console.log(`📅 Formatted schedule, building game options...`)
     const gameOptions = sortedSchedule.filter(g => g.status !== GameResult.NOT_PLAYED && g.stageIndex > 0).map(game => ({
       label: `${teams.getTeamForId(game.awayTeamId)?.abbrName} ${game.awayScore} - ${game.homeScore} ${teams.getTeamForId(game.homeTeamId)?.abbrName}`,
       value: { w: game.weekIndex, s: game.seasonIndex, c: game.scheduleId, o: GameStatsOptions.OVERVIEW, b: { wi: week - 1, si: season } }
     }))
       .map(option => ({ ...option, value: JSON.stringify(option.value) }))
+      .slice(0, 25) // Discord has a 25 option limit for select menus
     const gameSelector = gameOptions.length > 0 ? [
       {
         type: ComponentType.ActionRow,
@@ -49,7 +60,9 @@ async function showSchedule(token: string, client: DiscordClient,
         spacing: SeparatorSpacingSize.Large
       },
     ] : []
+    console.log(`📅 Fetching all weeks...`)
     const allWeeks = await MaddenClient.getAllWeeks(league)
+    console.log(`📅 Got ${allWeeks.length} weeks`)
     if (allWeeks.length === 0) {
       throw new Error(`No Weeks availaible. Try exporting from the dashboard`)
     }
@@ -61,6 +74,8 @@ async function showSchedule(token: string, client: DiscordClient,
         value: { wi: w, si: season }
       }))
       .map(option => ({ ...option, value: JSON.stringify(option.value) }))
+      .slice(0, 25) // Discord has a 25 option limit for select menus
+    console.log(`📅 Week options count: ${weekOptions.length}`)
     const seasonOptions = [...new Set(allWeeks.map(ws => ws.seasonIndex))]
       .sort((a, b) => a - b)
       .map(s => ({
@@ -68,45 +83,62 @@ async function showSchedule(token: string, client: DiscordClient,
         value: { wi: Math.min(...allWeeks.filter(ws => ws.seasonIndex === s).map(ws => ws.weekIndex) || [0]), si: s }
       }))
       .map(option => ({ ...option, value: JSON.stringify(option.value) }))
-    await client.editOriginalInteraction(token, {
+      .slice(0, 25) // Discord has a 25 option limit for select menus
+    console.log(`📅 Season options count: ${seasonOptions.length}`)
+    console.log(`📅 Game options count: ${gameOptions.length}`)
+    console.log(`📅 Sending final response to Discord...`)
+
+    // Build components array, only including selectors with valid options
+    const responseComponents: any[] = [
+      {
+        type: ComponentType.TextDisplay,
+        content: message
+      },
+      {
+        type: ComponentType.Separator,
+        divider: true,
+        spacing: SeparatorSpacingSize.Small
+      },
+      ...gameSelector,
+    ]
+
+    // Only add week selector if we have options
+    if (weekOptions.length > 0) {
+      responseComponents.push({
+        type: ComponentType.ActionRow,
+        components: [
+          {
+            type: ComponentType.StringSelect,
+            custom_id: "week_selector",
+            placeholder: `${getMessageForWeek(week)}`,
+            options: weekOptions
+          }
+        ]
+      })
+    }
+
+    // Only add season selector if we have options
+    if (seasonOptions.length > 0) {
+      responseComponents.push({
+        type: ComponentType.ActionRow,
+        components: [
+          {
+            type: ComponentType.StringSelect,
+            custom_id: "season_selector",
+            placeholder: `Season ${(season) + MADDEN_SEASON}`,
+            options: seasonOptions
+          }
+        ]
+      })
+    }
+
+    const response = await client.editOriginalInteraction(token, {
       flags: 32768,
-      components: [
-        {
-          type: ComponentType.TextDisplay,
-          content: message
-        },
-        {
-          type: ComponentType.Separator,
-          divider: true,
-          spacing: SeparatorSpacingSize.Small
-        },
-        ...gameSelector,
-        {
-          type: ComponentType.ActionRow,
-          components: [
-            {
-              type: ComponentType.StringSelect,
-              custom_id: "week_selector",
-              placeholder: `${getMessageForWeek(week)}`,
-              options: weekOptions
-            }
-          ]
-        },
-        {
-          type: ComponentType.ActionRow,
-          components: [
-            {
-              type: ComponentType.StringSelect,
-              custom_id: "season_selector",
-              placeholder: `Season ${(season) + MADDEN_SEASON}`,
-              options: seasonOptions
-            }
-          ]
-        },
-      ]
+      components: responseComponents
     })
+    console.log(`✅ Successfully sent schedule response to Discord!`)
   } catch (e) {
-    console.error(e)
+    console.error("❌ Error in showSchedule:", e)
     await client.editOriginalInteraction(token, {
       flags: 32768,
       components: [
@@ -122,6 +154,7 @@ async function showSchedule(token: string, client: DiscordClient,
 async function showTeamSchedule(token: string, client: DiscordClient,
   league: string, requestedTeamId: number, requestedSeason?: number) {
   try {
+    console.log(`📅 showTeamSchedule called: league=${league}, teamId=${requestedTeamId}, season=${requestedSeason}`)
     const settledPromise = await Promise.allSettled([
       MaddenClient.getTeamSchedule(league, requestedSeason),
       MaddenClient.getLatestTeams(league),
@@ -137,13 +170,15 @@ async function showTeamSchedule(token: string, client: DiscordClient,
       throw new Error("Failed to get all season weeks")
     }
     const allWeeks = settledPromise[2].value
-    const teamId = teams.getTeamForId(requestedTeamId).teamId
+    const teamId = getTeamOrThrow(teams, requestedTeamId).teamId
     const logos = await leagueLogosView.createView(league)
 
     // Filter schedule to only include games for the specified team
-    const teamSchedule = schedule.filter(game => game.awayTeamId !== 0 && game.homeTeamId !== 0).filter(game =>
-      teams.getTeamForId(game.awayTeamId).teamId === teamId || teams.getTeamForId(game.homeTeamId).teamId === teamId
-    ).sort((a, b) => a.scheduleId - b.scheduleId)
+    const teamSchedule = schedule.filter(game => game.awayTeamId !== 0 && game.homeTeamId !== 0).filter(game => {
+      const awayTeam = teams.getTeamForId(game.awayTeamId);
+      const homeTeam = teams.getTeamForId(game.homeTeamId);
+      return (awayTeam && awayTeam.teamId === teamId) || (homeTeam && homeTeam.teamId === teamId);
+    }).sort((a, b) => a.scheduleId - b.scheduleId)
 
 
     const selectedTeam = teams.getTeamForId(teamId)
@@ -180,9 +215,10 @@ async function showTeamSchedule(token: string, client: DiscordClient,
           scheduleLines.push(`**Wk ${week}:** BYE`)
         }
       } else {
-        const isTeamAway = teams.getTeamForId(game.awayTeamId).teamId === teamId
-        const opponent = teams.getTeamForId(isTeamAway ? game.homeTeamId : game.awayTeamId)
-        const opponentDisplay = `${formatTeamEmoji(logos, opponent?.abbrName)} ${opponent?.displayName}`
+        const awayTeam = getTeamOrThrow(teams, game.awayTeamId);
+        const isTeamAway = awayTeam.teamId === teamId
+        const opponent = getTeamOrThrow(teams, isTeamAway ? game.homeTeamId : game.awayTeamId)
+        const opponentDisplay = `${formatTeamEmoji(logos, opponent.abbrName)} ${opponent.displayName}`
         const teamDisplay = `${formatTeamEmoji(logos, selectedTeam.abbrName)} ${selectedTeam.displayName}`
 
         const weekLabel = getMessageForWeekShortened(week)
@@ -213,7 +249,8 @@ async function showTeamSchedule(token: string, client: DiscordClient,
     let ties = 0
 
     playedGames.forEach(game => {
-      const isTeamAway = teams.getTeamForId(game.awayTeamId).teamId === teamId
+      const awayTeam = getTeamOrThrow(teams, game.awayTeamId);
+      const isTeamAway = awayTeam.teamId === teamId
       const teamScore = isTeamAway ? game.awayScore : game.homeScore
       const opponentScore = isTeamAway ? game.homeScore : game.awayScore
 
@@ -232,16 +269,17 @@ async function showTeamSchedule(token: string, client: DiscordClient,
 
     const gameOptions = teamSchedule.filter(g => g.status !== GameResult.NOT_PLAYED).sort((a, b) => a.weekIndex - b.weekIndex).map(game => {
       const isTeamAway = game.awayTeamId === teamId
-      const opponent = teams.getTeamForId(isTeamAway ? game.homeTeamId : game.awayTeamId)
+      const opponent = getTeamOrThrow(teams, isTeamAway ? game.homeTeamId : game.awayTeamId)
       const teamScore = isTeamAway ? game.awayScore : game.homeScore
       const opponentScore = isTeamAway ? game.homeScore : game.awayScore
 
       return {
-        label: `${selectedTeam.abbrName} ${teamScore} - ${opponentScore} ${opponent?.abbrName}`,
+        label: `${selectedTeam.abbrName} ${teamScore} - ${opponentScore} ${opponent.abbrName}`,
         value: { w: game.weekIndex, s: game.seasonIndex, c: game.scheduleId, o: GameStatsOptions.OVERVIEW, b: { ti: teamId, si: season } }
       }
     })
       .map(option => ({ ...option, value: JSON.stringify(option.value) }))
+      .slice(0, 25) // Discord has a 25 option limit for select menus
 
     const gameSelector = gameOptions.length > 0 ? [
       {
@@ -268,6 +306,7 @@ async function showTeamSchedule(token: string, client: DiscordClient,
         value: { si: s, ti: teamId }
       }))
       .map(option => ({ ...option, value: JSON.stringify(option.value) }))
+      .slice(0, 25) // Discord has a 25 option limit for select menus
     await client.editOriginalInteraction(token, {
       flags: 32768,
       components: [
@@ -295,7 +334,7 @@ async function showTeamSchedule(token: string, client: DiscordClient,
       ]
     })
   } catch (e) {
-    console.error(e)
+    console.error("❌ Error in showTeamSchedule:", e)
     await client.editOriginalInteraction(token, {
       flags: 32768,
       components: [
@@ -338,6 +377,7 @@ function getWeekSelection(interaction: MessageComponentInteraction) {
         return parsedId as WeekSelection
       }
     } catch (e) {
+      console.error('Failed to parse week selection custom ID:', customId, e);
     }
   }
 }
@@ -357,13 +397,14 @@ function getTeamSelection(interaction: MessageComponentInteraction) {
         return parsedId
       }
     } catch (e) {
+      console.error('Failed to parse team selection custom ID:', customId, e);
     }
   }
 }
 
 
 export default {
-  async handleCommand(command: Command, client: DiscordClient) {
+  async handleCommand(command: Command, client: DiscordClient, db: Firestore, ctx: ParameterizedContext) {
     const { guild_id } = command
 
     const leagueSettings = await LeagueSettingsDB.getLeagueSettings(guild_id)
@@ -382,8 +423,8 @@ export default {
         throw new Error("Invalid week number. Valid weeks are week 1-18 and for playoffs: Wildcard = 19, Divisional = 20, Conference Championship = 21, Super Bowl = 23")
       }
       const season = (scheduleCommand.options?.[1] as APIApplicationCommandInteractionDataIntegerOption)?.value
+      respond(ctx, deferMessage())
       showSchedule(command.token, client, league, week != null ? Number(week) : undefined, season != null ? Number(season) : undefined)
-      return deferMessage()
     } else if (scheduleCommand.name === "team") {
       if (!scheduleCommand.options || !scheduleCommand.options[0]) {
         throw new Error("teams free misconfigured")
@@ -406,9 +447,9 @@ export default {
         throw new Error(`Found more than one  team for phrase ${teamSearchPhrase}.Enter a team name, city, abbreviation, or nickname.Examples: Buccaneers, TB, Tampa Bay, Bucs.Found teams: ${results.map(t => t.obj.displayName).join(", ")}`)
       }
       const foundTeam = results[0].obj
-      const teamIdToShowSchedule = teams.getTeamForId(foundTeam.id).teamId
+      const teamIdToShowSchedule = getTeamOrThrow(teams, foundTeam.id).teamId
+      respond(ctx, deferMessage())
       showTeamSchedule(command.token, client, leagueId, teamIdToShowSchedule, season ? Number(season) : undefined)
-      return deferMessage()
     }
   },
   commandDefinition(): RESTPostAPIApplicationCommandsJSONBody {
@@ -510,4 +551,4 @@ export default {
     }
     return []
   }
-}
+} as CommandHandler & MessageComponentHandler & AutocompleteHandler

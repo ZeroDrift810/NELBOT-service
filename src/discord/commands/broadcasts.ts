@@ -1,6 +1,8 @@
-import { Command, MessageComponentInteraction } from "../commands_handler"
-import { createMessageResponse, DiscordClient, ResponseType } from "../discord_utils"
+import { ParameterizedContext } from "koa"
+import { CommandHandler, Command, MessageComponentInteraction, MessageComponentHandler } from "../commands_handler"
+import { respond, createMessageResponse, DiscordClient, ResponseType } from "../discord_utils"
 import { APIApplicationCommandInteractionDataChannelOption, APIApplicationCommandInteractionDataRoleOption, APIApplicationCommandInteractionDataStringOption, APIApplicationCommandInteractionDataSubcommandGroupOption, APIApplicationCommandInteractionDataSubcommandOption, ApplicationCommandOptionType, ApplicationCommandType, ButtonStyle, ChannelType, ComponentType, RESTPostAPIApplicationCommandsJSONBody, InteractionResponseType } from "discord-api-types/v10"
+import { Firestore } from "firebase-admin/firestore"
 import LeagueSettingsDB, { BroadcastConfiguration, DiscordIdType } from "../settings_db"
 import { twitchNotifierHandler } from "../../twitch-notifier/routes"
 import { youtubeNotifierHandler } from "../../yt-notifier/routes"
@@ -66,7 +68,7 @@ function listBroadcasts(broadcasts: BroadcastChannel[], broadcastType: Broadcast
 
 
 export default {
-  async handleCommand(command: Command, client: DiscordClient) {
+  async handleCommand(command: Command, client: DiscordClient, db: Firestore, ctx: ParameterizedContext) {
     const { guild_id } = command
     if (!command.data.options) {
       throw new Error("misconfigured broadcast")
@@ -89,7 +91,7 @@ export default {
         conf.role = { id: role, id_type: DiscordIdType.ROLE }
       }
       await LeagueSettingsDB.configureBroadcast(guild_id, conf)
-      return createMessageResponse("Broadcast is configured!")
+      respond(ctx, createMessageResponse("Broadcast is configured!"))
     } else if (subCommandName === "youtube") {
       const subCommandGroup = subCommand as APIApplicationCommandInteractionDataSubcommandGroupOption
       if (!subCommandGroup || !subCommandGroup.options) {
@@ -99,21 +101,22 @@ export default {
       const groupCommandName = groupCommand.name
       if (groupCommandName === "list") {
         const youtubeUrls = await youtubeNotifierHandler.listYoutubeChannels(guild_id)
-        return listBroadcasts(youtubeUrls.map(y => ({ name: y.channelName, url: y.channelUri })), BroadcastType.YOUTUBE, ResponseType.COMMAND)
+
+        respond(ctx, listBroadcasts(youtubeUrls.map(y => ({ name: y.channelName, url: y.channelUri })), BroadcastType.YOUTUBE, ResponseType.COMMAND))
       } else if (groupCommandName === "add") {
         if (!groupCommand.options || !groupCommand.options[0]) {
           throw new Error(`broadcast youtube ${groupCommandName} misconfigured`)
         }
         const youtubeUrl = (groupCommand.options[0] as APIApplicationCommandInteractionDataStringOption).value
         await youtubeNotifierHandler.addYoutubeChannel(guild_id, youtubeUrl)
-        return createMessageResponse("Channel updated successfully")
+        respond(ctx, createMessageResponse("Channel updated successfully"))
       } else if (groupCommandName === "remove") {
         if (!groupCommand.options || !groupCommand.options[0]) {
           throw new Error(`broadcast youtube ${groupCommandName} misconfigured`)
         }
         const youtubeUrl = (groupCommand.options[0] as APIApplicationCommandInteractionDataStringOption).value
         await youtubeNotifierHandler.removeYoutubeChannel(guild_id, youtubeUrl)
-        return createMessageResponse("Channel updated successfully")
+        respond(ctx, createMessageResponse("Channel updated successfully"))
       }
       else {
         throw new Error(`broadcast youtube ${groupCommandName}`)
@@ -127,21 +130,21 @@ export default {
       const groupCommandName = groupCommand.name
       if (groupCommandName === "list") {
         const twitchUrls = await twitchNotifierHandler.listTwitchChannels(guild_id)
-        return listBroadcasts(twitchUrls.map(t => ({ name: t.name, url: t.url })), BroadcastType.TWITCH, ResponseType.COMMAND)
+        respond(ctx, listBroadcasts(twitchUrls.map(t => ({ name: t.name, url: t.url })), BroadcastType.TWITCH, ResponseType.COMMAND))
       } else if (groupCommandName === "add") {
         if (!groupCommand.options || !groupCommand.options[0]) {
           throw new Error(`broadcast twitch ${groupCommandName} misconfigured`)
         }
         const twitchUrl = (groupCommand.options[0] as APIApplicationCommandInteractionDataStringOption).value
         await twitchNotifierHandler.addTwitchChannel(guild_id, twitchUrl)
-        return createMessageResponse("Channel updated successfully")
+        respond(ctx, createMessageResponse("Channel updated successfully"))
       } else if (groupCommandName === "remove") {
         if (!groupCommand.options || !groupCommand.options[0]) {
           throw new Error(`broadcast twitch ${groupCommandName} misconfigured`)
         }
         const twitchUrl = (groupCommand.options[0] as APIApplicationCommandInteractionDataStringOption).value
         await twitchNotifierHandler.removeTwitchChannel(guild_id, twitchUrl)
-        return createMessageResponse("Channel updated successfully")
+        respond(ctx, createMessageResponse("Channel updated successfully"))
       }
       else {
         throw new Error(`broadcast twitch ${groupCommandName} misconfigured`)
@@ -152,15 +155,20 @@ export default {
   },
   async handleInteraction(interaction: MessageComponentInteraction, client: DiscordClient) {
     const customId = interaction.custom_id
-    const listComponent = JSON.parse(customId) as ComponentId
-    if (listComponent.t === BroadcastType.TWITCH) {
-      const twitchList = await twitchNotifierHandler.listTwitchChannels(interaction.guild_id)
-      return listBroadcasts(twitchList, BroadcastType.TWITCH, ResponseType.INTERACTION, listComponent.p)
-    } else if (listComponent.t === BroadcastType.YOUTUBE) {
-      const ytList = await youtubeNotifierHandler.listYoutubeChannels(interaction.guild_id)
-      return listBroadcasts(ytList.map(y => ({ name: y.channelName, url: y.channelUri })), BroadcastType.YOUTUBE, ResponseType.INTERACTION, listComponent.p)
-    } else {
-      throw new Error(`invalid broadcast type ${listComponent.t}`)
+    try {
+      const listComponent = JSON.parse(customId) as ComponentId
+      if (listComponent.t === BroadcastType.TWITCH) {
+        const twitchList = await twitchNotifierHandler.listTwitchChannels(interaction.guild_id)
+        return listBroadcasts(twitchList, BroadcastType.TWITCH, ResponseType.INTERACTION, listComponent.p)
+      } else if (listComponent.t === BroadcastType.YOUTUBE) {
+        const ytList = await youtubeNotifierHandler.listYoutubeChannels(interaction.guild_id)
+        return listBroadcasts(ytList.map(y => ({ name: y.channelName, url: y.channelUri })), BroadcastType.YOUTUBE, ResponseType.INTERACTION, listComponent.p)
+      } else {
+        throw new Error(`invalid broadcast type ${listComponent.t}`)
+      }
+    } catch (e) {
+      console.error('Failed to parse broadcasts custom ID:', customId, e);
+      throw new Error('Invalid broadcast interaction format');
     }
   },
   commandDefinition(): RESTPostAPIApplicationCommandsJSONBody {
@@ -277,4 +285,4 @@ export default {
       ]
     }
   }
-} 
+} as CommandHandler & MessageComponentHandler

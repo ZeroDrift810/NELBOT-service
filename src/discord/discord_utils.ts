@@ -60,12 +60,28 @@ export class SnallabotDiscordError extends Error {
   }
 }
 
+/**
+ * Safely retrieves a team by ID, throwing an error if not found
+ * @param teams - The TeamList to search
+ * @param teamId - The team ID to look up
+ * @returns The team if found
+ * @throws Error if team not found
+ */
+export function getTeamOrThrow(teams: TeamList, teamId: number): Team {
+  const team = teams.getTeamForId(teamId);
+  if (!team) {
+    throw new Error(`Team with ID ${teamId} not found in league data. The team may have been deleted or the data may be corrupted.`);
+  }
+  return team;
+}
+
 export interface DiscordClient {
   interactionVerifier(ctx: ParameterizedContext): Promise<boolean>,
   handleSlashCommand(mode: CommandMode, command: RESTPostAPIApplicationCommandsJSONBody, guild?: string): Promise<void>,
   editOriginalInteraction(token: string, body: { [key: string]: any }): Promise<void>,
   editOriginalInteractionWithForm(token: string, body: FormData): Promise<void>,
   createMessage(channel: ChannelId, content: string, allowedMentions: string[]): Promise<MessageId>,
+  createMessageWithForm(channel: ChannelId, formData: FormData): Promise<MessageId>,
   editMessage(channel: ChannelId, messageId: MessageId, content: string, allowedMentions: string[]): Promise<void>,
   deleteMessage(channel: ChannelId, messageId: MessageId): Promise<void>,
   createChannel(guild_id: string, channelName: string, category: CategoryId, privateUsers?: UserId[], privateRoles?: RoleId[]): Promise<ChannelId>,
@@ -201,6 +217,8 @@ export function createClient(settings: DiscordSettings): DiscordClient {
       try {
         await sendDiscordRequest(`webhooks/${settings.appId}/${token}/messages/@original`, { method: "PATCH", body })
       } catch (e) {
+        console.error("❌ Error in editOriginalInteraction:", e)
+        throw e
       }
     },
     editOriginalInteractionWithForm: async (token: string, body: FormData) => {
@@ -232,9 +250,28 @@ export function createClient(settings: DiscordSettings): DiscordClient {
             throw new SnallabotDiscordError(e, `Snallabot does not have permission to create a message in <#${channel.id}>`)
           }
           else if (e.code === UNKNOWN_MESSAGE) {
-            throw new SnallabotDiscordError(e, `Snallabot cannot create message, it may have been deleted? Try to re-configure the featuer you just used. Full discord error ${e.message}`)
+            throw new SnallabotDiscordError(e, `Snallabot cannot delete message, it may have been deleted? Full discord error ${e.message}`)
           } else if (e.code === UNKNOWN_CHANNEL) {
-            throw new SnallabotDiscordError(e, `Snallabot cannot create message in channel because the channel (<#${channel.id}>) may have been deleted? Try to re-configure the feature you just used. Full discord error: ${e.message}`)
+            throw new SnallabotDiscordError(e, `Snallabot cannot delete message in channel because the channel (<#${channel.id}>) may have been deleted? Full discord error: ${e.message}`)
+          }
+        }
+        throw e
+      }
+    },
+    createMessageWithForm: async (channel: ChannelId, formData: FormData): Promise<MessageId> => {
+      try {
+        const res = await sendDiscordRequestForm(`channels/${channel.id}/messages`, formData, {
+          method: "POST"
+        })
+        const message = await res.json() as APIMessage
+        return {
+          id: message.id, id_type: DiscordIdType.MESSAGE
+        }
+      }
+      catch (e) {
+        if (e instanceof DiscordRequestError) {
+          if (e.isPermissionError()) {
+            throw new SnallabotDiscordError(e, `Snallabot does not have permission to create a message in <#${channel.id}>`)
           }
         }
         throw e
@@ -575,9 +612,11 @@ export function createClient(settings: DiscordSettings): DiscordClient {
 
 
 export function respond(ctx: ParameterizedContext, body: any) {
+  console.log("📤 Sending response to Discord")
   ctx.status = 200
   ctx.set("Content-Type", "application/json")
   ctx.body = body
+  console.log("✅ Response set:", JSON.stringify(body).substring(0, 100))
 }
 
 export function createMessageResponse(content: string, options = {}) {
@@ -643,52 +682,52 @@ export function createProdClient() {
 
 export enum SnallabotTeamEmojis {
   // AFC East
-  NE = "<:snallabot_ne:1364103345752641587>",
-  NYJ = "<:snallabot_nyj:1364103346985635900>",
-  BUF = "<:snallabot_buf:1364103347862372434>",
-  MIA = "<:snallabot_mia:1364103349091176468>",
+  NE = "<:snallabot_ne:1450281665648660625>",
+  NYJ = "<:snallabot_nyj:1450281682593644584>",
+  BUF = "<:snallabot_buf:1450281572761862175>",
+  MIA = "<:snallabot_mia:1450281655926521958>",
 
   // AFC North
-  CIN = "<:snallabot_cin:1364103477399130144>",
-  PIT = "<:snallabot_pit:1364103356393455667>",
-  BAL = "<:snallabot_bal:1364105429591785543>",
-  CLE = "<:snallabot_cle:1364103360545820742>",
+  CIN = "<:snallabot_cin:1450281588267941949>",
+  PIT = "<:snallabot_pit:1450281693075476663>",
+  BAL = "<:snallabot_bal:1450281568084951070>",
+  CLE = "<:snallabot_cle:1450281593565352160>",
 
   // AFC South
-  TEN = "<:snallabot_ten:1364103353201856562>",
-  IND = "<:snallabot_ind:1364103350194278484>",
-  JAX = "<:snallabot_jax:1364103352115400774>",
-  HOU = "<:snallabot_hou:1364103351184396318>",
+  TEN = "<:snallabot_ten:1450281714504044757>",
+  IND = "<:snallabot_ind:1450281623911272458>",
+  JAX = "<:snallabot_jax:1450281628923465800>",
+  HOU = "<:snallabot_hou:1450281619033165955>",
 
   // AFC West
-  KC = "<:snallabot_kc:1364105564711288852>",
-  LV = "<:snallabot_lv:1364105565885825114>",
-  DEN = "<:snallabot_den:1364103366765973615>",
-  LAC = "<:snallabot_lac:1364103363297411142>",
+  KC = "<:snallabot_kc:1450281633533136969>",
+  LV = "<:snallabot_lv:1450281650985635860>",
+  DEN = "<:snallabot_den:1450281603590000764>",
+  LAC = "<:snallabot_lac:1450281638922682543>",
 
   // NFC East
-  DAL = "<:snallabot_dal:1364105752087887902>",
-  NYG = "<:snallabot_nyg:1364103377411244124>",
-  PHI = "<:snallabot_phi:1364105809134354472>",
-  WAS = "<:snallabot_was:1364103380728811572>",
+  DAL = "<:snallabot_dal:1450281598510563378>",
+  NYG = "<:snallabot_nyg:1450281675367125064>",
+  PHI = "<:snallabot_phi:1450281687593521274>",
+  WAS = "<:snallabot_was:1450281719671427297>",
 
   // NFC North
-  MIN = "<:snallabot_min:1364106069160493066>",
-  CHI = "<:snallabot_chi:1364103373825249331>",
-  DET = "<:snallabot_det:1364106151796670526>",
-  GB = "<:snallabot_gb:1364103370289184839>",
+  MIN = "<:snallabot_min:1450281660674216030>",
+  CHI = "<:snallabot_chi:1450281583163740334>",
+  DET = "<:snallabot_det:1450281608816103548>",
+  GB = "<:snallabot_gb:1450281613979029645>",
 
   // NFC South
-  NO = "<:snallabot_no:1364103387758592051>",
-  CAR = "<:snallabot_car:1364106419804045353>",
-  TB = "<:snallabot_tb:1364103384222797904>",
-  ATL = "<:snallabot_atl:1364106360383471737>",
+  NO = "<:snallabot_no:1450281670728089684>",
+  CAR = "<:snallabot_car:1450281577488715898>",
+  TB = "<:snallabot_tb:1450281709068226590>",
+  ATL = "<:snallabot_atl:1450281563047727306>",
 
   // NFC West
-  ARI = "<:snallabot_ari:1364106640315646013>",
-  LAR = "<:snallabot_lar:1364103394800701450>",
-  SEA = "<:snallabot_sea:1364103391260840018>",
-  SF = "<:snallabot_sf:1364106686083895336>",
+  ARI = "<:snallabot_ari:1450281557804974080>",
+  LAR = "<:snallabot_lar:1450281645923106906>",
+  SEA = "<:snallabot_sea:1450281698943041667>",
+  SF = "<:snallabot_sf:1450281703649185866>",
   // Default, NFL logo
   NFL = "<:snallabot_nfl:1364108784229810257>"
 }

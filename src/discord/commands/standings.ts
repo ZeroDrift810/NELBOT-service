@@ -1,6 +1,8 @@
-import { Command, MessageComponentInteraction } from "../commands_handler"
-import { DiscordClient, NoConnectedLeagueError, deferMessage } from "../discord_utils"
+import { ParameterizedContext } from "koa"
+import { CommandHandler, Command, MessageComponentHandler, MessageComponentInteraction } from "../commands_handler"
+import { respond, DiscordClient, deferMessage } from "../discord_utils"
 import { APIApplicationCommandInteractionDataStringOption, APIMessageStringSelectInteractionData, ApplicationCommandOptionType, ApplicationCommandType, ButtonStyle, ComponentType, InteractionResponseType, RESTPostAPIApplicationCommandsJSONBody, SeparatorSpacingSize } from "discord-api-types/v10"
+import { Firestore } from "firebase-admin/firestore"
 import LeagueSettingsDB from "../settings_db"
 import MaddenDB from "../../db/madden_db"
 import { Standing, formatRecord } from "../../export/madden_league_types"
@@ -20,7 +22,10 @@ function formatStandings(standings: Standing[], page: number = 0, itemsPerPage: 
 }
 
 function getStandingsForFilter(standings: Standing[], filter: string): Standing[] {
-  const sortedStandings = standings.sort((s1, s2) => s1.rank - s2.rank);
+  // FIX: Filter out ghost teams (entries with no team name or rank)
+  const validStandings = standings.filter(s => s.teamName && s.rank !== undefined);
+
+  const sortedStandings = validStandings.sort((s1, s2) => s1.rank - s2.rank);
 
   switch (filter.toLowerCase()) {
     case "nfl":
@@ -167,25 +172,30 @@ function getStandingsFilter(interaction: MessageComponentInteraction) {
     return JSON.parse(data.values[0]) as StandingsPaginated
 
   } else {
-    const parsedId = JSON.parse(customId)
-    if (parsedId.f != null) {
-      return parsedId as StandingsPaginated
+    try {
+      const parsedId = JSON.parse(customId)
+      if (parsedId.f != null) {
+        return parsedId as StandingsPaginated
+      }
+    } catch (e) {
+      console.error('Failed to parse standings custom ID:', customId, e);
+      throw new Error("Invalid standings custom ID format")
     }
   }
   throw new Error("invalid standings command")
 }
 
 export default {
-  async handleCommand(command: Command, client: DiscordClient) {
+  async handleCommand(command: Command, client: DiscordClient, db: Firestore, ctx: ParameterizedContext) {
     const { guild_id, token } = command
     const leagueSettings = await LeagueSettingsDB.getLeagueSettings(guild_id)
     if (!leagueSettings?.commands?.madden_league?.league_id) {
-      throw new NoConnectedLeagueError(guild_id)
+      throw new Error("No madden league linked. Setup snallabot with your Madden league first")
     }
     const league = leagueSettings.commands.madden_league.league_id
     const scope = (command?.data?.options?.[0] as APIApplicationCommandInteractionDataStringOption)?.value
+    respond(ctx, deferMessage())
     handleCommand(client, token, league, scope)
-    return deferMessage()
   },
   commandDefinition(): RESTPostAPIApplicationCommandsJSONBody {
     return {
@@ -229,4 +239,4 @@ export default {
     }
 
   }
-}
+} as CommandHandler & MessageComponentHandler
