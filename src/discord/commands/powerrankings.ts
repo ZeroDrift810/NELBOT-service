@@ -97,7 +97,11 @@ async function generatePowerRankings(token: string, client: DiscordClient, leagu
     console.log(`🏆 Using standings data for ${standings.length} teams`)
 
     for (const standing of standings) {
-      const gamesPlayed = standing.totalWins + standing.totalLosses + standing.totalTies
+      // Defensive null checks for win/loss/tie data
+      const wins = standing.totalWins ?? 0
+      const losses = standing.totalLosses ?? 0
+      const ties = standing.totalTies ?? 0
+      const gamesPlayed = wins + losses + ties
 
       // Use standings point totals directly
       const pointsFor = standing.ptsFor || 0
@@ -119,9 +123,9 @@ async function generatePowerRankings(token: string, client: DiscordClient, leagu
       teamGameDataList.push({
         teamId: standing.teamId,
         gamesPlayed,
-        wins: standing.totalWins,
-        losses: standing.totalLosses,
-        ties: standing.totalTies,
+        wins,
+        losses,
+        ties,
         pointsFor,
         pointsAgainst,
         totalOffYards,
@@ -353,8 +357,9 @@ export default {
     }
     const league = leagueSettings.commands.madden_league.league_id
 
-    // Generate power rankings for selected range
-    await generatePowerRankings(interaction.token, client, league, selectedRange)
+    // Fire off generation WITHOUT awaiting - return deferred response immediately
+    // so Discord doesn't timeout waiting for our response
+    generatePowerRankings(interaction.token, client, league, selectedRange)
 
     return {
       type: InteractionResponseType.DeferredMessageUpdate

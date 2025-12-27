@@ -1,0 +1,92 @@
+[CmdletBinding()]
+param(
+  [string]$ProjectRoot = "C:\LeagueHQ\NELBOTMASTER",
+  [int]$Port = 8787
+)
+
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
+
+# --- 1) Load your config (pre-seeds env + trims) ---
+$ConfigPath = Join-Path $ProjectRoot 'config.ps1'
+if (Test-Path $ConfigPath) { . $ConfigPath }
+
+# --- 2) Helpers ---
+function Read-Secret([string]$Prompt) {
+  $s = Read-Host -AsSecureString -Prompt $Prompt
+  $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
+  try { [Runtime.InteropServices.Marshal]::PtrToStringAuto($b) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }
+}
+function Need([string]$EnvName, [bool]$Secret=$false) {
+  if (-not $env:$EnvName -or [string]::IsNullOrWhiteSpace($env:$EnvName)) {
+    if ($Secret) { $env:$EnvName = Read-Secret "$EnvName (hidden)" }
+    else         { $env:$EnvName = (Read-Host $EnvName).Trim() }
+  }
+}
+
+# --- 3) Harmonize expected names (works with your config.ps1) ---
+# Public/required
+Need 'PUBLIC_KEY'
+Need 'DISCORD_TOKEN' $true
+Need 'APP_ID'
+# OAuth client secret (your config sets CLIENT_SECRET env var)
+if (-not $env:DISCORD_CLIENT_SECRET -and $env:CLIENT_SECRET) { $env:DISCORD_CLIENT_SECRET = $env:CLIENT_SECRET }
+Need 'DISCORD_CLIENT_SECRET' $true
+# Firestore SA path & project id
+Need 'GOOGLE_APPLICATION_CREDENTIALS'
+Need 'GCLOUD_PROJECT' # prompt if you want this enforced; if not, comment this line
+
+# Optional port (default 8787)
+if (-not $env:PORT -or [string]::IsNullOrWhiteSpace($env:PORT)) { $env:PORT = "$Port" } else { $Port = [int]$env:PORT }
+
+# Strip accidental "Bot " prefix on token (safe)
+if ($env:DISCORD_TOKEN) { $env:DISCORD_TOKEN = ($env:DISCORD_TOKEN -replace '^\s*Bot\s+','').Trim() }
+
+# --- 4) Transcript/logging ---
+$stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+$log   = Join-Path $env:TEMP "nelbot_start_$stamp.log"
+Start-Transcript -Path $log -Force | Out-Null
+Write-Host "Logging to: $log" -ForegroundColor Cyan
+
+# --- 5) Preflight ---
+if (-not (Test-Path $ProjectRoot)) { throw "Project folder missing: $ProjectRoot" }
+Set-Location $ProjectRoot
+if (-not (Test-Path $env:GOOGLE_APPLICATION_CREDENTIALS)) { throw "Service Account JSON not found: $env:GOOGLE_APPLICATION_CREDENTIALS" }
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw "Node.js not found in PATH. Install Node 20+ and reopen PowerShell." }
+if (-not (Get-Command npm  -ErrorAction SilentlyContinue)) { throw "npm not found in PATH. Reinstall Node.js to include npm." }
+
+# --- 6) Build if needed (vanilla) ---
+$distEntry = Join-Path $ProjectRoot "dist\index.js"
+if (-not (Test-Path $distEntry)) {
+  Write-Host "No dist\index.js found → npm ci && npm run build..." -ForegroundColor Yellow
+  npm ci
+  npm run build
+}
+
+# --- 7) Ensure emulator is OFF; set port; free port if already bound ---
+Remove-Item Env:\FIRESTORE_EMULATOR_HOST -ErrorAction SilentlyContinue
+$env:PORT = "$Port"
+try {
+  $pid = (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue).OwningProcess
+  if ($pid) { Stop-Process -Id $pid -Force -ErrorAction Stop; Start-Sleep 0.5 }
+} catch {}
+
+# --- 8) Start app (vanilla routing: /discord/webhook/slashCommand) ---
+Write-Host ""
+Write-Host "Starting NELBOTMASTER on http://localhost:$Port  (Discord path: /discord/webhook/slashCommand)" -ForegroundColor Green
+Write-Host "Run tunnel in another window:  cloudflared tunnel --url http://localhost:$Port" -ForegroundColor Yellow
+Write-Host ""
+
+try {
+  node .\dist\index.js
+} catch {
+  Write-Host "`n--- ERROR SUMMARY ---" -ForegroundColor Red
+  Write-Host $_.Exception.Message -ForegroundColor Red
+  throw
+} finally {
+  Stop-Transcript | Out-Null
+  if ($Host.Name -ne 'Visual Studio Code Host') {
+    Write-Host "`nLog: $log" -ForegroundColor Cyan
+    Read-Host "Press Enter to close"
+  }
+}

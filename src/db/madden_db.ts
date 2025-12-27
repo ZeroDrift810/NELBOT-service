@@ -122,7 +122,8 @@ interface MaddenDB {
   getTeamStatsForGame(leagueId: string, teamId: string, week: number, season: number): Promise<TeamStats>,
   getExportStatus(leagueId: string): Promise<ExportStatus | undefined>,
   getStatsForGame(leagueId: string, season: number, week: number, scheduleId: number): Promise<GameStats>,
-  getTeamSchedule(leagueId: string, season?: number): Promise<MaddenGame[]>
+  getTeamSchedule(leagueId: string, season?: number): Promise<MaddenGame[]>,
+  getWeeklyStats(leagueId: string, seasonIndex: number, weekIndex: number): Promise<PlayerStats>
 }
 
 function convertDate(firebaseObject: any) {
@@ -553,7 +554,12 @@ const MaddenDB: MaddenDB = {
     }).filter(s => latestTeams.has(s.teamId))
   },
   getLatestPlayers: async function(leagueId: string) {
-    const playerSnapshot = await db.collection("madden_data26").doc(leagueId).collection(MaddenEvents.MADDEN_PLAYER).select("rosterId", "firstName", "lastName", "teamId", "position", "birthYear", "birthMonth", "birthDay", "presentationId", "timestamp").get()
+    const playerSnapshot = await db.collection("madden_data26").doc(leagueId).collection(MaddenEvents.MADDEN_PLAYER).select(
+      "rosterId", "firstName", "lastName", "teamId", "position",
+      "birthYear", "birthMonth", "birthDay", "presentationId", "timestamp",
+      // Draft & career tracking fields
+      "draftPick", "draftRound", "yearsPro", "playerBestOvr", "rookieYear", "devTrait", "portraitId"
+    ).get()
     return deduplicatePlayers(playerSnapshot.docs.map(doc => {
       return convertDate(doc.data()) as StoredEvent<Player>
     }))
@@ -839,6 +845,35 @@ const MaddenDB: MaddenDB = {
       return deduplicateSchedule(games
         .filter(game => game.seasonIndex === latestSeason)
         , teams).sort((a, b) => a.weekIndex - b.weekIndex)
+    }
+  },
+  getWeeklyStats: async function(leagueId: string, seasonIndex: number, weekIndex: number): Promise<PlayerStats> {
+    const getWeekStats = async <T>(collection: string): Promise<T[]> => {
+      // Use stageIndex == 1 (regular season) instead of > 0 to avoid composite index requirement
+      const stats = await db.collection("madden_data26").doc(leagueId).collection(collection)
+        .where("seasonIndex", "==", seasonIndex)
+        .where("weekIndex", "==", weekIndex)
+        .where("stageIndex", "==", 1)
+        .get()
+      return stats.docs.map(d => convertDate(d.data()) as T)
+    }
+
+    const [passing, rushing, receiving, defense, kicking, punting] = await Promise.all([
+      getWeekStats<PassingStats>(MaddenEvents.MADDEN_PASSING_STAT),
+      getWeekStats<RushingStats>(MaddenEvents.MADDEN_RUSHING_STAT),
+      getWeekStats<ReceivingStats>(MaddenEvents.MADDEN_RECEIVING_STAT),
+      getWeekStats<DefensiveStats>(MaddenEvents.MADDEN_DEFENSIVE_STAT),
+      getWeekStats<KickingStats>(MaddenEvents.MADDEN_KICKING_STAT),
+      getWeekStats<PuntingStats>(MaddenEvents.MADDEN_PUNTING_STAT),
+    ])
+
+    return {
+      [PlayerStatType.PASSING]: passing,
+      [PlayerStatType.RUSHING]: rushing,
+      [PlayerStatType.RECEIVING]: receiving,
+      [PlayerStatType.DEFENSE]: defense,
+      [PlayerStatType.KICKING]: kicking,
+      [PlayerStatType.PUNTING]: punting,
     }
   }
 }

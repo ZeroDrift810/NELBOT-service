@@ -112,7 +112,7 @@ async function refreshToken(token: TokenInformation): Promise<TokenInformation> 
     });
     const newToken = await res.json() as AccountToken
     if (!res.ok || !newToken.access_token) {
-      throw new EAAccountError(`Error refreshing tokens, response from EA ${JSON.stringify(newToken)}`, "Lost connection to EA. Connect this league again via https://snallabot.me/dashboard")
+      throw new EAAccountError(`Error refreshing tokens, response from EA ${JSON.stringify(newToken)}`, "The only solution may to unlink the dashboard and set it up again")
     }
     const newExpiry = new Date(new Date().getTime() + newToken.expires_in * 1000)
     return { accessToken: newToken.access_token, refreshToken: newToken.refresh_token, expiry: newExpiry, console: token.console, blazeId: `${token.blazeId}` }
@@ -348,7 +348,7 @@ type StoredTokenInformation = {
   token: TokenInformation,
   session?: SessionInformation
 }
-export type ExportDestination = { autoUpdate: boolean, leagueInfo: boolean, rosters: boolean, weeklyStats: boolean, url: string, lastExportAttempt?: Date, lastSuccessfulExport?: Date, editable: boolean, extraData?: boolean }
+export type ExportDestination = { autoUpdate: boolean, leagueInfo: boolean, rosters: boolean, weeklyStats: boolean, url: string, lastExportAttempt?: Date, lastSuccessfulExport?: Date, editable: boolean }
 const DEFAULT_EXPORT = `${DEPLOYMENT_URL}`
 
 export async function storeToken(token: TokenInformation, leagueId: number) {
@@ -461,10 +461,12 @@ export async function storedTokenClient(leagueId: number): Promise<StoredEAClien
   }
 }
 
+export type ExportProgressCallback = (message: string) => Promise<void>
+
 interface MaddenExporter {
   exportCurrentWeek(): Promise<void>,
-  exportAllWeeks(): Promise<void>,
-  exportSpecificWeeks(weeks: { weekIndex: number, stage: number }[]): Promise<void>,
+  exportAllWeeks(onProgress?: ExportProgressCallback): Promise<void>,
+  exportSpecificWeeks(weeks: { weekIndex: number, stage: number }[], onProgress?: ExportProgressCallback): Promise<void>,
   exportSurroundingWeek(): Promise<void>
 }
 export enum ExportContext {
@@ -492,12 +494,6 @@ type TeamData = {
     [key: string]: RosterExport
   }
 }
-
-export type ExtraData = {
-  leagueName: string,
-  calendarYear: number,
-  numMembers: number
-} & LeagueResponse
 
 const STAGGERED_MAX_MS = 75 // to stagger requests to EA and other outbound services
 const PRESEASON_WEEKS = Array.from({ length: 4 }, (v, index) => index)
@@ -542,16 +538,6 @@ async function exportTeamData(data: TeamData, destinations: { [key: string]: Exp
     }))
   }
 }
-
-async function exportExtraData(data: ExtraData, destinations: { [key: string]: ExportDestination }, leagueId: string, platform: string) {
-  const extraDataDestinations = Object.values(destinations).filter(d => d.extraData).map(d => createDestination(d.url))
-  if (extraDataDestinations.length > 0) {
-    await Promise.all(extraDataDestinations.map(async d => {
-      await d.extra(platform, leagueId, data)
-    }))
-  }
-}
-
 const staggeringCall = async <T>(p: Promise<T>, waitTime: number = STAGGERED_MAX_MS): Promise<T> => {
   await new Promise(r => setTimeout(r, randomIntFromInterval(1, waitTime)))
   return await p
@@ -569,7 +555,7 @@ export async function exporterForLeague(leagueId: number, context: ExportContext
       return true
     }
   }))
-  const [leagueInfo, allLeagues] = await Promise.all([client.getLeagueInfo(leagueId), client.getLeagues()])
+  const leagueInfo = await client.getLeagueInfo(leagueId)
   return {
     exportCurrentWeek: async function() {
       const weekIndex = leagueInfo.careerHubInfo.seasonInfo.seasonWeek
@@ -593,7 +579,7 @@ export async function exporterForLeague(leagueId: number, context: ExportContext
       ].filter((c) => c >= 0 && c <= maxWeekIndex)
       await this.exportSpecificWeeks(weeksToExport.map(w => ({ weekIndex: w, stage: stage })))
     },
-    exportAllWeeks: async function() {
+    exportAllWeeks: async function(onProgress?: ExportProgressCallback) {
       const weeksToExport =
         PRESEASON_WEEKS.map(weekIndex => ({
           weekIndex: weekIndex, stage: 0
@@ -601,14 +587,17 @@ export async function exporterForLeague(leagueId: number, context: ExportContext
           SEASON_WEEKS.map(weekIndex => ({
             weekIndex: weekIndex, stage: 1
           })))
-      await this.exportSpecificWeeks(weeksToExport)
+      await this.exportSpecificWeeks(weeksToExport, onProgress)
     },
-    exportSpecificWeeks: async function(weeks: { weekIndex: number, stage: number }[]) {
+    exportSpecificWeeks: async function(weeks: { weekIndex: number, stage: number }[], onProgress?: ExportProgressCallback) {
       const destinations = Object.values(contextualExports)
       const leagueData = { weeks: [] } as any
       const leagueInfoRequests = [] as Promise<any>[]
       function toStage(stage: number): Stage {
         return stage === 0 ? Stage.PRESEASON : Stage.SEASON
+      }
+      if (onProgress) {
+        await onProgress("Exporting league info (teams & standings)...")
       }
       if (destinations.some(e => e.leagueInfo)) {
         leagueInfoRequests.push(client.getTeams(leagueId).then(t => leagueData.leagueTeams = t))
@@ -619,10 +608,17 @@ export async function exporterForLeague(leagueId: number, context: ExportContext
       if (destinations.some(e => e.weeklyStats)) {
         // Process weeks in batches of 4 to reduce memory usage on big exports
         const batchSize = 4;
+        const totalBatches = Math.ceil(weeks.length / batchSize)
         for (let i = 0; i < weeks.length; i += batchSize) {
+          const batchNum = Math.floor(i / batchSize) + 1
           const weeklyData = { weeks: [] } as any
           const weekBatch = weeks.slice(i, i + batchSize);
           const batchDataRequests = [] as Promise<any>[]
+
+          if (onProgress) {
+            const weekNames = weekBatch.map(w => w.stage === 0 ? `PS${w.weekIndex + 1}` : `Week ${w.weekIndex + 1}`).join(", ")
+            await onProgress(`Exporting stats batch ${batchNum}/${totalBatches}: ${weekNames}...`)
+          }
 
           weekBatch.forEach(week => {
             const stage = toStage(week.stage)
@@ -644,9 +640,13 @@ export async function exporterForLeague(leagueId: number, context: ExportContext
         }
       }
       if (destinations.some(e => e.rosters)) {
+        if (onProgress) {
+          await onProgress("Exporting team rosters (32 teams + free agents)...")
+        }
         let teamRequests = [] as Promise<any>[]
         let teamData: TeamData = { roster: {} }
         const teamList = leagueInfo.teamIdInfoList
+        const totalRosterBatches = Math.ceil(teamList.length / 4)
         teamRequests.push(client.getFreeAgents(leagueId).then(freeAgents => teamData.roster["freeagents"] = freeAgents))
 
         for (let idx = 0; idx < teamList.length; idx++) {
@@ -657,6 +657,10 @@ export async function exporterForLeague(leagueId: number, context: ExportContext
             )
           )
           if ((idx + 1) % 4 == 0) {
+            const rosterBatchNum = Math.floor(idx / 4) + 1
+            if (onProgress) {
+              await onProgress(`Exporting rosters batch ${rosterBatchNum}/${totalRosterBatches}...`)
+            }
             await Promise.all(teamRequests)
             await exportTeamData(teamData, contextualExports, `${leagueId}`, client.getSystemConsole())
             teamRequests = []
@@ -669,15 +673,6 @@ export async function exporterForLeague(leagueId: number, context: ExportContext
           teamRequests = []
           teamData = { roster: {} }
         }
-      }
-      if (destinations.some(e => e.extraData)) {
-        const {
-          leagueName,
-          numMembers,
-          calendarYear
-        } = allLeagues.filter(l => l.leagueId === leagueId)[0]
-        const extraData = { ...leagueInfo, leagueName, numMembers, calendarYear }
-        await exportExtraData(extraData, contextualExports, `${leagueId}`, client.getSystemConsole())
       }
     }
   } as MaddenExporter

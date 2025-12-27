@@ -1,0 +1,35 @@
+========================================
+NEL BOT - SIMPLE WORKFLOW
+========================================
+
+AFTER YOU MAKE CODE CHANGES:
+----------------------------
+1. Open Command Prompt (CMD) in this folder
+2. Run:   npm run build
+3. Run:   pm2 restart nelbot
+4. Run:   pm2 logs nelbot --lines 5 --nostream
+5. Look for "Ready as NEL25#9697"
+6. Test in Discord
+
+
+IF BOT NOT RESPONDING OR STUCK:
+---------------------------------
+1. Run:   RESTART-CLEAN.cmd
+2. Wait for it to finish
+3. Look for "Ready as NEL25#9697"
+4. Test in Discord
+
+
+QUICK STATUS CHECK:
+-------------------
+Run:   pm2 status
+
+Expected output:
+  nelbot          - online
+  nelbot-tunnel   - online
+
+
+THAT'S IT!
+----------
+Just those 3 workflows above.
+Don't overthink it.

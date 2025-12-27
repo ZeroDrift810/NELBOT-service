@@ -34,16 +34,16 @@ async function handleInteraction(ctx: ParameterizedContext, client: DiscordClien
   }
   if (interactionType === InteractionType.ApplicationCommand) {
     const slashCommandInteraction = interaction as APIChatInputApplicationCommandGuildInteraction
-    const { token, guild_id, data, member } = slashCommandInteraction
+    const { token, guild_id, channel_id, data, member } = slashCommandInteraction
     const { name } = data
-    await handleCommand({ command_name: name, token, guild_id, data, member }, ctx, client, db)
+    await handleCommand({ command_name: name, token, guild_id, channel_id, data, member }, ctx, client, db)
     return
   } else if (interactionType === InteractionType.ApplicationCommandAutocomplete) {
     const slashCommandInteraction = interaction as APIApplicationCommandAutocompleteInteraction
     const { guild_id, data } = slashCommandInteraction
     if (guild_id) {
       const { name } = data
-      await handleAutocomplete({ command_name: name, guild_id, data, }, ctx)
+      await handleAutocomplete({ command_name: name, guild_id, data, token: slashCommandInteraction.token }, ctx)
     }
     return
   } else if (interactionType === InteractionType.MessageComponent) {
@@ -75,17 +75,9 @@ EventDB.on<MaddenBroadcastEvent>("MADDEN_BROADCAST", async (events) => {
       console.error(`${discordServer} is not configured for Broadcasts`)
     } else {
       const channel = configuration.channel
-      let roleTag = ""
-      if (configuration.role) {
-        // its an @everyone tag if the server id matches the role id
-        if (configuration.role.id === discordServer) {
-          roleTag = "@everyone"
-        } else {
-          roleTag = `<@&${configuration.role.id}>`
-        }
-      }
+      const role = configuration.role ? `<@&${configuration.role.id}>` : ""
       try {
-        await prodClient.createMessage(channel, `${roleTag} ${broadcastEvent.title}\n\n${broadcastEvent.video}`, ["roles", "everyone"])
+        await prodClient.createMessage(channel, `${role} ${broadcastEvent.title}\n\n${broadcastEvent.video}`, ["roles"])
       } catch (e) {
         console.error("could not send broacast")
       }

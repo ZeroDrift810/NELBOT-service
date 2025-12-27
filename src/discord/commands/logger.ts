@@ -1,10 +1,12 @@
-import { Command } from "../commands_handler"
-import { createMessageResponse, DiscordClient } from "../discord_utils"
+import { ParameterizedContext } from "koa"
+import { CommandHandler, Command } from "../commands_handler"
+import { respond, createMessageResponse, DiscordClient } from "../discord_utils"
 import { APIApplicationCommandInteractionDataBooleanOption, APIApplicationCommandInteractionDataChannelOption, APIApplicationCommandInteractionDataSubcommandOption, ApplicationCommandOptionType, ApplicationCommandType, ChannelType, RESTPostAPIApplicationCommandsJSONBody } from "discord-api-types/v10"
+import { FieldValue, Firestore } from "firebase-admin/firestore"
 import LeagueSettingsDB, { DiscordIdType, LoggerConfiguration } from "../settings_db"
 
 export default {
-  async handleCommand(command: Command, client: DiscordClient) {
+  async handleCommand(command: Command, client: DiscordClient, db: Firestore, ctx: ParameterizedContext) {
     const { guild_id } = command
     if (!command.data.options) {
       throw new Error("logger command not defined properly")
@@ -32,7 +34,7 @@ export default {
     } else {
       await LeagueSettingsDB.removeLogger(guild_id)
     }
-    return createMessageResponse(`logger is ${on ? "on" : "off"}`)
+    respond(ctx, createMessageResponse(`logger is ${on ? "on" : "off"}`))
   },
   commandDefinition(): RESTPostAPIApplicationCommandsJSONBody {
     return {
@@ -61,4 +63,4 @@ export default {
       ]
     }
   }
-} 
+} as CommandHandler

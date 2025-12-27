@@ -36,5 +36,6 @@ app
   .use(debugRouter.allowedMethods())
   .use(dashboard.routes())
   .use(dashboard.allowedMethods())
-
+  .use(dashboard.routes())
+  .use(dashboard.allowedMethods())
 export default app

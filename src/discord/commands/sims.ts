@@ -1,6 +1,8 @@
-import { Command, MessageComponentInteraction } from "../commands_handler"
-import { DiscordClient, NoConnectedLeagueError, deferMessage } from "../discord_utils"
+import { ParameterizedContext } from "koa"
+import { CommandHandler, Command, MessageComponentHandler, MessageComponentInteraction } from "../commands_handler"
+import { respond, DiscordClient, deferMessage } from "../discord_utils"
 import { APIMessageStringSelectInteractionData, ApplicationCommandType, ButtonStyle, ComponentType, InteractionResponseType, RESTPostAPIApplicationCommandsJSONBody, SeparatorSpacingSize } from "discord-api-types/v10"
+import { Firestore } from "firebase-admin/firestore"
 import { MADDEN_SEASON } from "../../export/madden_league_types"
 import LeagueSettingsDB, { UserId } from "../settings_db"
 import { discordLeagueView } from "../../db/view"
@@ -258,17 +260,17 @@ async function showSeasonSims(token: string, client: DiscordClient, league: stri
 }
 
 export default {
-  async handleCommand(command: Command, client: DiscordClient) {
+  async handleCommand(command: Command, client: DiscordClient, db: Firestore, ctx: ParameterizedContext) {
     const { guild_id } = command
 
     const leagueSettings = await LeagueSettingsDB.getLeagueSettings(guild_id)
     if (!leagueSettings.commands.madden_league?.league_id) {
-      throw new NoConnectedLeagueError(guild_id)
+      throw new Error("Could not find a linked Madden league, link a league first")
     }
     const league = leagueSettings.commands.madden_league.league_id
 
     showSeasonSims(command.token, client, league)
-    return deferMessage()
+    respond(ctx, deferMessage())
   },
 
   commandDefinition(): RESTPostAPIApplicationCommandsJSONBody {
@@ -314,4 +316,4 @@ export default {
       type: InteractionResponseType.DeferredMessageUpdate,
     }
   }
-}
+} as CommandHandler & MessageComponentHandler

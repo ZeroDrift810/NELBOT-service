@@ -1,16 +1,26 @@
-import { Command, Autocomplete, MessageComponentInteraction } from "../commands_handler"
-import { DiscordClient, deferMessage, getTeamEmoji, SnallabotTeamEmojis, NoConnectedLeagueError } from "../discord_utils"
+import { ParameterizedContext } from "koa"
+import { CommandHandler, Command, AutocompleteHandler, Autocomplete, MessageComponentHandler, MessageComponentInteraction } from "../commands_handler"
+import { respond, DiscordClient, deferMessage, getTeamEmoji, SnallabotTeamEmojis } from "../discord_utils"
 import { APIApplicationCommandInteractionDataStringOption, APIApplicationCommandInteractionDataSubcommandOption, APIMessageStringSelectInteractionData, ApplicationCommandOptionType, ButtonStyle, ComponentType, InteractionResponseType, RESTPostAPIApplicationCommandsJSONBody, SeparatorSpacingSize } from "discord-api-types/v10"
+import { Firestore } from "firebase-admin/firestore"
 import { playerSearchIndex, discordLeagueView, teamSearchView, LeagueLogos, leagueLogosView } from "../../db/view"
 import fuzzysort from "fuzzysort"
 import MaddenDB, { PlayerListQuery, PlayerStatType, PlayerStats, TeamList } from "../../db/madden_db"
 import { DevTrait, LBStyleTrait, MADDEN_SEASON, MaddenGame, POSITIONS, POSITION_GROUP, PlayBallTrait, Player, QBStyleTrait, SensePressureTrait, YesNoTrait } from "../../export/madden_league_types"
 
+// EA's public CDN for Madden player portraits
+const MADDEN_PORTRAIT_CDN = "https://ratings-images-prod.pulse.ea.com/madden-nfl-26/portraits"
+
+function getPlayerPortraitUrl(portraitId: number): string {
+  return `${MADDEN_PORTRAIT_CDN}/${portraitId}.png`
+}
+
 enum PlayerSelection {
   PLAYER_OVERVIEW = "po",
   PLAYER_FULL_RATINGS = "pr",
   PLAYER_WEEKLY_STATS = "pw",
-  PLAYER_SEASON_STATS = "ps"
+  PLAYER_SEASON_STATS = "ps",
+  PLAYER_CONTRACT = "pc"
 }
 
 type Selection = { r: number, s: PlayerSelection, q?: PlayerPagination }
@@ -25,6 +35,8 @@ function formatPlaceholder(selection: PlayerSelection): string {
       return "Season Stats"
     case PlayerSelection.PLAYER_WEEKLY_STATS:
       return "Weekly Stats"
+    case PlayerSelection.PLAYER_CONTRACT:
+      return "Contract"
   }
 }
 
@@ -45,6 +57,10 @@ function generatePlayerOptions(rosterId: number, pagination?: PlayerPagination) 
     {
       label: "Season Stats",
       value: { r: rosterId, s: PlayerSelection.PLAYER_SEASON_STATS }
+    },
+    {
+      label: "Contract",
+      value: { r: rosterId, s: PlayerSelection.PLAYER_CONTRACT }
     }
   ].map(option => {
     if (pagination) (option.value as Selection).q = pagination
@@ -63,7 +79,7 @@ async function showPlayerCard(playerSearch: string, client: DiscordClient, token
     const discordLeague = await discordLeagueView.createView(guild_id)
     const leagueId = discordLeague?.leagueId
     if (!leagueId) {
-      throw new NoConnectedLeagueError(guild_id)
+      throw new Error(`No League connected to snallabot`)
     }
     let searchRosterId = Number(playerSearch)
     if (isNaN(searchRosterId)) {
@@ -99,8 +115,19 @@ async function showPlayerCard(playerSearch: string, client: DiscordClient, token
       flags: 32768,
       components: [
         {
-          type: ComponentType.TextDisplay,
-          content: formatPlayerCard(player, teamList, logos)
+          type: 9, // Section
+          components: [
+            {
+              type: ComponentType.TextDisplay,
+              content: formatPlayerCard(player, teamList, logos)
+            }
+          ],
+          accessory: {
+            type: 11, // Thumbnail
+            media: {
+              url: getPlayerPortraitUrl(player.portraitId)
+            }
+          }
         },
         {
           type: ComponentType.Separator,
@@ -138,7 +165,7 @@ async function showPlayerFullRatings(rosterId: number, client: DiscordClient, to
   const discordLeague = await discordLeagueView.createView(guild_id)
   const leagueId = discordLeague?.leagueId
   if (!leagueId) {
-    throw new NoConnectedLeagueError(guild_id)
+    throw new Error(`No League connected to snallabot`)
   }
   const [player, teamList] = await Promise.all([MaddenDB.getPlayer(leagueId, `${rosterId}`), MaddenDB.getLatestTeams(leagueId)])
   // 0 team id means the player is a free agent
@@ -166,8 +193,19 @@ async function showPlayerFullRatings(rosterId: number, client: DiscordClient, to
     flags: 32768,
     components: [
       {
-        type: ComponentType.TextDisplay,
-        content: formatFullRatings(player, teamList, logos)
+        type: 9, // Section
+        components: [
+          {
+            type: ComponentType.TextDisplay,
+            content: formatFullRatings(player, teamList, logos)
+          }
+        ],
+        accessory: {
+          type: 11, // Thumbnail
+          media: {
+            url: getPlayerPortraitUrl(player.portraitId)
+          }
+        }
       },
       {
         type: ComponentType.Separator,
@@ -194,7 +232,7 @@ async function showPlayerWeeklyStats(rosterId: number, client: DiscordClient, to
   const discordLeague = await discordLeagueView.createView(guild_id)
   const leagueId = discordLeague?.leagueId
   if (!leagueId) {
-    throw new NoConnectedLeagueError(guild_id)
+    throw new Error(`No League connected to snallabot`)
   }
   const [player, teamList] = await Promise.all([MaddenDB.getPlayer(leagueId, `${rosterId}`), MaddenDB.getLatestTeams(leagueId)])
   const playerStats = await MaddenDB.getPlayerStats(leagueId, player)
@@ -225,8 +263,19 @@ async function showPlayerWeeklyStats(rosterId: number, client: DiscordClient, to
     flags: 32768,
     components: [
       {
-        type: ComponentType.TextDisplay,
-        content: formatWeeklyStats(player, teamList, playerStats, games, logos)
+        type: 9, // Section
+        components: [
+          {
+            type: ComponentType.TextDisplay,
+            content: formatWeeklyStats(player, teamList, playerStats, games, logos)
+          }
+        ],
+        accessory: {
+          type: 11, // Thumbnail
+          media: {
+            url: getPlayerPortraitUrl(player.portraitId)
+          }
+        }
       },
       {
         type: ComponentType.Separator,
@@ -253,7 +302,7 @@ async function showPlayerYearlyStats(rosterId: number, client: DiscordClient, to
   const discordLeague = await discordLeagueView.createView(guild_id)
   const leagueId = discordLeague?.leagueId
   if (!leagueId) {
-    throw new NoConnectedLeagueError(guild_id)
+    throw new Error(`No League connected to snallabot`)
   }
   const [player, teamList] = await Promise.all([MaddenDB.getPlayer(leagueId, `${rosterId}`), MaddenDB.getLatestTeams(leagueId)])
   const playerStats = await MaddenDB.getPlayerStats(leagueId, player)
@@ -281,8 +330,19 @@ async function showPlayerYearlyStats(rosterId: number, client: DiscordClient, to
     flags: 32768,
     components: [
       {
-        type: ComponentType.TextDisplay,
-        content: formatSeasonStats(player, playerStats, teamList, logos)
+        type: 9, // Section
+        components: [
+          {
+            type: ComponentType.TextDisplay,
+            content: formatSeasonStats(player, playerStats, teamList, logos)
+          }
+        ],
+        accessory: {
+          type: 11, // Thumbnail
+          media: {
+            url: getPlayerPortraitUrl(player.portraitId)
+          }
+        }
       },
       {
         type: ComponentType.Separator,
@@ -304,6 +364,72 @@ async function showPlayerYearlyStats(rosterId: number, client: DiscordClient, to
     ]
   })
 }
+
+async function showPlayerContract(rosterId: number, client: DiscordClient, token: string, guild_id: string, pagination?: PlayerPagination) {
+  const discordLeague = await discordLeagueView.createView(guild_id)
+  const leagueId = discordLeague?.leagueId
+  if (!leagueId) {
+    throw new Error(`No League connected to snallabot`)
+  }
+  const [player, teamList] = await Promise.all([MaddenDB.getPlayer(leagueId, `${rosterId}`), MaddenDB.getLatestTeams(leagueId)])
+  const backToSearch = pagination ? [
+    {
+      type: ComponentType.Separator,
+      divider: true,
+      spacing: SeparatorSpacingSize.Small
+    },
+    {
+      type: ComponentType.ActionRow,
+      components: [
+        {
+          type: ComponentType.Button,
+          style: ButtonStyle.Secondary,
+          label: "Back to List",
+          custom_id: `${JSON.stringify(pagination)}`
+        }
+      ]
+    }
+  ] : []
+  const logos = await leagueLogosView.createView(leagueId)
+  await client.editOriginalInteraction(token, {
+    flags: 32768,
+    components: [
+      {
+        type: 9, // Section
+        components: [
+          {
+            type: ComponentType.TextDisplay,
+            content: formatContract(player, teamList, logos)
+          }
+        ],
+        accessory: {
+          type: 11, // Thumbnail
+          media: {
+            url: getPlayerPortraitUrl(player.portraitId)
+          }
+        }
+      },
+      {
+        type: ComponentType.Separator,
+        divider: true,
+        spacing: SeparatorSpacingSize.Large
+      },
+      {
+        type: ComponentType.ActionRow,
+        components: [
+          {
+            type: ComponentType.StringSelect,
+            custom_id: "player_card",
+            placeholder: formatPlaceholder(PlayerSelection.PLAYER_CONTRACT),
+            options: generatePlayerOptions(rosterId, pagination)
+          }
+        ]
+      },
+      ...backToSearch
+    ]
+  })
+}
+
 type ShortPlayerListQuery = { t?: number, p?: string, r?: boolean }
 function toShortQuery(q: PlayerListQuery) {
   const query: ShortPlayerListQuery = {}
@@ -350,7 +476,7 @@ async function showPlayerList(playerSearch: string, client: DiscordClient, token
     const discordLeague = await discordLeagueView.createView(guild_id)
     const leagueId = discordLeague?.leagueId
     if (!leagueId) {
-      throw new NoConnectedLeagueError(guild_id)
+      throw new Error(`No League connected to snallabot`)
     }
     let query: PlayerListQuery;
     try {
@@ -701,11 +827,11 @@ function getDevTraitName(devTrait: DevTrait, yearsPro: number): string {
 }
 
 enum SnallabotDevEmojis {
-  NORMAL = "<:snallabot_normal_dev:1363761484131209226>",
-  STAR = "<:snallabot_star_dev:1363761179805220884>",
-  SUPERSTAR = "<:snallabot_superstar_dev:1363761181525020703>",
-  XFACTOR = "<:snallabot_xfactor_dev:1363761178622562484>",
-  HIDDEN = "<:snallabot_hidden_dev:1363761182682517565>"
+  NORMAL = "<:snallabot_normal_dev:1450281729825833104>",
+  STAR = "<:snallabot_star_dev:1450281736020820222>",
+  SUPERSTAR = "<:snallabot_superstar_dev:1450281741171425313>",
+  XFACTOR = "<:snallabot_xfactor_dev:1450281747152371944>",
+  HIDDEN = "<:snallabot_hidden_dev:1450281724855713882>"
 }
 const rules = new Intl.PluralRules("en-US", { type: "ordinal" })
 const suffixes = new Map([
@@ -726,10 +852,11 @@ function getSeasonFormatting(yearsPro: number) {
 
 function formatMoney(m: number) {
   if (m >= 1000000) {
-    return `${(m / 1000000).toFixed(2)}M`
-  } else {
-    return `${m / 1000}K`
+    return `$${(m / 1000000).toFixed(2)}M`
+  } else if (m >= 1000) {
+    return `$${(m / 1000).toFixed(0)}K`
   }
+  return `$${m.toLocaleString()}`
 }
 
 function getTeamAbbr(teamId: number, teams: TeamList) {
@@ -834,218 +961,428 @@ function formatLbStyle(lbStyle: LBStyleTrait) {
 }
 
 
-function formatFullRatings(player: Player, teams: TeamList, logos: LeagueLogos) {
-  const teamAbbr = getTeamAbbr(player.teamId, teams)
+function getAllRatingsByPosition(player: Player): { physical: Array<{ name: string, value: number }>, primary: Array<{ name: string, value: number }>, secondary: Array<{ name: string, value: number }> } {
+  const physical = [
+    { name: "Speed", value: player.speedRating },
+    { name: "Accel", value: player.accelRating },
+    { name: "Agility", value: player.agilityRating },
+    { name: "Strength", value: player.strengthRating },
+    { name: "Jump", value: player.jumpRating },
+    { name: "Stamina", value: player.staminaRating },
+    { name: "Injury", value: player.injuryRating },
+    { name: "Toughness", value: player.toughRating },
+    { name: "Awareness", value: player.awareRating }
+  ]
 
-  return `
-  # ${getTeamEmoji(teamAbbr, logos)} ${player.position} ${player.firstName} ${player.lastName}
-  ## ${getDevTraitName(player.devTrait, player.yearsPro)} **${player.playerBestOvr} OVR**
-## Ratings
-__**Physical Attributes:**__
-**Speed:** ${player.speedRating}
-**Acceleration:** ${player.accelRating}
-**Agility:** ${player.agilityRating}
-**Strength:** ${player.strengthRating}
-**Jump:** ${player.jumpRating}
-**Stamina:** ${player.staminaRating}
-**Injury:** ${player.injuryRating}
-**Toughness:** ${player.toughRating}
-**Awareness:** ${player.awareRating}
+  let primary: Array<{ name: string, value: number }> = []
+  let secondary: Array<{ name: string, value: number }> = []
 
-__**Offensive Skills:**__
-**Carrying:** ${player.carryRating}
-**Break Tackle:** ${player.breakTackleRating}
-**Trucking:** ${player.truckRating}
-**Stiff Arm:** ${player.stiffArmRating}
-**Spin Move:** ${player.spinMoveRating}
-**Juke Move:** ${player.jukeMoveRating}
-**Change of Direction:** ${player.changeOfDirectionRating}
-**Ball Carrier Vision:** ${player.bCVRating}
+  switch (player.position) {
+    case "QB":
+      primary = [
+        { name: "Throw Power", value: player.throwPowerRating },
+        { name: "Throw Acc", value: player.throwAccRating },
+        { name: "Deep Acc", value: player.throwAccDeepRating },
+        { name: "Mid Acc", value: player.throwAccMidRating },
+        { name: "Short Acc", value: player.throwAccShortRating },
+        { name: "Throw on Run", value: player.throwOnRunRating },
+        { name: "Play Action", value: player.playActionRating },
+        { name: "Under Pressure", value: player.throwUnderPressureRating },
+        { name: "Break Sack", value: player.breakSackRating }
+      ]
+      secondary = [
+        { name: "Carrying", value: player.carryRating },
+        { name: "BC Vision", value: player.bCVRating },
+        { name: "Juke Move", value: player.jukeMoveRating },
+        { name: "Spin Move", value: player.spinMoveRating }
+      ]
+      break
+    case "HB":
+      primary = [
+        { name: "Carrying", value: player.carryRating },
+        { name: "BC Vision", value: player.bCVRating },
+        { name: "Break Tackle", value: player.breakTackleRating },
+        { name: "Trucking", value: player.truckRating },
+        { name: "Stiff Arm", value: player.stiffArmRating },
+        { name: "Juke Move", value: player.jukeMoveRating },
+        { name: "Spin Move", value: player.spinMoveRating },
+        { name: "COD", value: player.changeOfDirectionRating }
+      ]
+      secondary = [
+        { name: "Catching", value: player.catchRating },
+        { name: "Short Route", value: player.routeRunShortRating },
+        { name: "Pass Block", value: player.passBlockRating }
+      ]
+      break
+    case "FB":
+      primary = [
+        { name: "Impact Block", value: player.impactBlockRating },
+        { name: "Lead Block", value: player.leadBlockRating },
+        { name: "Run Block", value: player.runBlockRating },
+        { name: "Pass Block", value: player.passBlockRating },
+        { name: "Carrying", value: player.carryRating },
+        { name: "Trucking", value: player.truckRating },
+        { name: "Break Tackle", value: player.breakTackleRating }
+      ]
+      secondary = [
+        { name: "Catching", value: player.catchRating },
+        { name: "Short Route", value: player.routeRunShortRating }
+      ]
+      break
+    case "WR":
+      primary = [
+        { name: "Catching", value: player.catchRating },
+        { name: "Catch in Traffic", value: player.cITRating },
+        { name: "Spec Catch", value: player.specCatchRating },
+        { name: "Short Route", value: player.routeRunShortRating },
+        { name: "Med Route", value: player.routeRunMedRating },
+        { name: "Deep Route", value: player.routeRunDeepRating },
+        { name: "Release", value: player.releaseRating }
+      ]
+      secondary = [
+        { name: "BC Vision", value: player.bCVRating },
+        { name: "Juke Move", value: player.jukeMoveRating },
+        { name: "Break Tackle", value: player.breakTackleRating },
+        { name: "Run Block", value: player.runBlockRating }
+      ]
+      break
+    case "TE":
+      primary = [
+        { name: "Catching", value: player.catchRating },
+        { name: "Catch in Traffic", value: player.cITRating },
+        { name: "Spec Catch", value: player.specCatchRating },
+        { name: "Short Route", value: player.routeRunShortRating },
+        { name: "Med Route", value: player.routeRunMedRating },
+        { name: "Run Block", value: player.runBlockRating },
+        { name: "Pass Block", value: player.passBlockRating },
+        { name: "Impact Block", value: player.impactBlockRating }
+      ]
+      secondary = [
+        { name: "Deep Route", value: player.routeRunDeepRating },
+        { name: "Release", value: player.releaseRating },
+        { name: "Break Tackle", value: player.breakTackleRating }
+      ]
+      break
+    case "LT":
+    case "LG":
+    case "C":
+    case "RG":
+    case "RT":
+      primary = [
+        { name: "Run Block", value: player.runBlockRating },
+        { name: "Pass Block", value: player.passBlockRating },
+        { name: "RB Power", value: player.runBlockPowerRating },
+        { name: "RB Finesse", value: player.runBlockFinesseRating },
+        { name: "PB Power", value: player.passBlockPowerRating },
+        { name: "PB Finesse", value: player.passBlockFinesseRating },
+        { name: "Lead Block", value: player.leadBlockRating },
+        { name: "Impact Block", value: player.impactBlockRating }
+      ]
+      if (player.position === "C") {
+        primary.push({ name: "Long Snap", value: player.longSnapRating })
+      }
+      break
+    case "LEDGE":
+    case "REDGE":
+      primary = [
+        { name: "Power Moves", value: player.powerMovesRating },
+        { name: "Finesse Moves", value: player.finesseMovesRating },
+        { name: "Block Shed", value: player.blockShedRating },
+        { name: "Tackle", value: player.tackleRating },
+        { name: "Hit Power", value: player.hitPowerRating },
+        { name: "Pursuit", value: player.pursuitRating },
+        { name: "Play Rec", value: player.playRecRating }
+      ]
+      secondary = [
+        { name: "Man Coverage", value: player.manCoverRating },
+        { name: "Zone Coverage", value: player.zoneCoverRating }
+      ]
+      break
+    case "DT":
+      primary = [
+        { name: "Block Shed", value: player.blockShedRating },
+        { name: "Power Moves", value: player.powerMovesRating },
+        { name: "Finesse Moves", value: player.finesseMovesRating },
+        { name: "Tackle", value: player.tackleRating },
+        { name: "Hit Power", value: player.hitPowerRating },
+        { name: "Pursuit", value: player.pursuitRating },
+        { name: "Play Rec", value: player.playRecRating }
+      ]
+      break
+    case "SAM":
+    case "WILL":
+    case "MIKE":
+      primary = [
+        { name: "Tackle", value: player.tackleRating },
+        { name: "Hit Power", value: player.hitPowerRating },
+        { name: "Pursuit", value: player.pursuitRating },
+        { name: "Block Shed", value: player.blockShedRating },
+        { name: "Power Moves", value: player.powerMovesRating },
+        { name: "Finesse Moves", value: player.finesseMovesRating },
+        { name: "Play Rec", value: player.playRecRating },
+        { name: "Zone Coverage", value: player.zoneCoverRating },
+        { name: "Man Coverage", value: player.manCoverRating }
+      ]
+      secondary = [
+        { name: "Press", value: player.pressRating },
+        { name: "Catching", value: player.catchRating }
+      ]
+      break
+    case "CB":
+      primary = [
+        { name: "Man Coverage", value: player.manCoverRating },
+        { name: "Zone Coverage", value: player.zoneCoverRating },
+        { name: "Press", value: player.pressRating },
+        { name: "Play Rec", value: player.playRecRating },
+        { name: "Tackle", value: player.tackleRating },
+        { name: "Catching", value: player.catchRating }
+      ]
+      secondary = [
+        { name: "Hit Power", value: player.hitPowerRating },
+        { name: "Pursuit", value: player.pursuitRating }
+      ]
+      break
+    case "FS":
+    case "SS":
+      primary = [
+        { name: "Zone Coverage", value: player.zoneCoverRating },
+        { name: "Man Coverage", value: player.manCoverRating },
+        { name: "Play Rec", value: player.playRecRating },
+        { name: "Tackle", value: player.tackleRating },
+        { name: "Hit Power", value: player.hitPowerRating },
+        { name: "Pursuit", value: player.pursuitRating },
+        { name: "Press", value: player.pressRating },
+        { name: "Catching", value: player.catchRating }
+      ]
+      secondary = [
+        { name: "Block Shed", value: player.blockShedRating }
+      ]
+      break
+    case "K":
+    case "P":
+      primary = [
+        { name: "Kick Power", value: player.kickPowerRating },
+        { name: "Kick Accuracy", value: player.kickAccRating }
+      ]
+      break
+  }
 
-__**Passing Skills:**__
-**Throw Power:** ${player.throwPowerRating}
-**Throw Accuracy:** ${player.throwAccRating}
-**Throw Accuracy Short:** ${player.throwAccShortRating}
-**Throw Accuracy Mid:** ${player.throwAccMidRating}
-**Throw Accuracy Deep:** ${player.throwAccDeepRating}
-**Throw On Run:** ${player.throwOnRunRating}
-**Play Action:** ${player.playActionRating}
-**Throw Under Pressure:** ${player.throwUnderPressureRating}
-**Break Sack:** ${player.breakSackRating}
-
-__**Receiving Skills:**__
-**Catching:** ${player.catchRating}
-**Spectacular Catch:** ${player.specCatchRating}
-**Catch In Traffic:** ${player.cITRating}
-**Route Running Short:** ${player.routeRunShortRating}
-**Route Running Med:** ${player.routeRunMedRating}
-**Route Running Deep:** ${player.routeRunDeepRating}
-**Release:** ${player.releaseRating}
-
-__**Blocking Skills:**__
-**Run Block:** ${player.runBlockRating}
-**Run Block Power:** ${player.runBlockPowerRating}
-**Run Block Finesse:** ${player.runBlockFinesseRating}
-**Pass Block:** ${player.passBlockRating}
-**Pass Block Power:** ${player.passBlockPowerRating}
-**Pass Block Finesse:** ${player.passBlockFinesseRating}
-**Impact Block:** ${player.impactBlockRating}
-**Lead Block:** ${player.leadBlockRating}
-**Long Snap:** ${player.longSnapRating}
-
-__**Defensive Skills:**__
-**Tackle:** ${player.tackleRating}
-**Hit Power:** ${player.hitPowerRating}
-**Power Moves:** ${player.powerMovesRating}
-**Finesse Moves:** ${player.finesseMovesRating}
-**Block Shedding:** ${player.blockShedRating}
-**Pursuit:** ${player.pursuitRating}
-**Play Recognition:** ${player.playRecRating}
-**Man Coverage:** ${player.manCoverRating}
-**Zone Coverage:** ${player.zoneCoverRating}
-**Press:** ${player.pressRating}
-
-__**Special Teams:**__
-**Kick Power:** ${player.kickPowerRating}
-**Kick Accuracy:** ${player.kickAccRating}
-**Kick Return:** ${player.kickRetRating}
-
-__**Styles:**__
-**QB Style:** ${formatQbStyle(player.qBStyleTrait)}
-**LB Style:** ${formatLbStyle(player.lBStyleTrait)}
-
-__**Traits:**__
-**Predictable:** ${formatYesNoTrait(player.predictTrait)}
-**Clutch:** ${formatYesNoTrait(player.clutchTrait)}
-**Tight Spiral:** ${formatYesNoTrait(player.tightSpiralTrait)}
-**Sense Pressure:** ${formatSensePressure(player.sensePressureTrait)}
-**Throw Away:** ${formatYesNoTrait(player.throwAwayTrait)}
-**DL Swim:** ${formatYesNoTrait(player.dLSwimTrait)}
-**DL Spin:** ${formatYesNoTrait(player.dLSpinTrait)}
-**DL Bull Rush:** ${formatYesNoTrait(player.dLBullRushTrait)}
-**High Motor:** ${formatYesNoTrait(player.highMotorTrait)}
-**Big Hitter:** ${formatYesNoTrait(player.bigHitTrait)}
-**Strip Ball:** ${formatYesNoTrait(player.stripBallTrait)}
-**Play Ball:** ${formatPlayBallTrait(player.playBallTrait)}
-**Fight for Yards:** ${formatYesNoTrait(player.fightForYardsTrait)}
-**YAC Catch:** ${formatYesNoTrait(player.yACCatchTrait)}
-**Possession Catch:** ${formatYesNoTrait(player.posCatchTrait)}
-**Aggressive Catch:** ${formatYesNoTrait(player.hPCatchTrait)}
-**Drop Open Passes:** ${formatYesNoTrait(player.dropOpenPassTrait)}
-**Feet In Bounds:** ${formatYesNoTrait(player.feetInBoundsTrait)}
-`
+  return { physical, primary, secondary }
 }
 
-function formatStats(stats: PlayerStats) {
-  const formattedStats: { scheduleId: string, value: string }[] = []
+function getAllPositionalTraits(player: Player): { styles: Array<{ name: string, value: string }>, traits: Array<{ name: string, value: string }> } {
+  const styles: Array<{ name: string, value: string }> = []
+  const traits: Array<{ name: string, value: string }> = []
+
+  // Add general traits if YES
+  if (player.clutchTrait === YesNoTrait.YES) traits.push({ name: "Clutch", value: formatYesNoTrait(player.clutchTrait) })
+  if (player.predictTrait === YesNoTrait.YES) traits.push({ name: "Predictable", value: formatYesNoTrait(player.predictTrait) })
+
+  switch (player.position) {
+    case "QB":
+      styles.push({ name: "QB Style", value: formatQbStyle(player.qBStyleTrait) })
+      if (player.sensePressureTrait !== SensePressureTrait.AVERAGE) {
+        styles.push({ name: "Sense Pressure", value: formatSensePressure(player.sensePressureTrait) })
+      }
+      if (player.throwAwayTrait === YesNoTrait.YES) traits.push({ name: "Throw Away", value: formatYesNoTrait(player.throwAwayTrait) })
+      if (player.tightSpiralTrait === YesNoTrait.YES) traits.push({ name: "Tight Spiral", value: formatYesNoTrait(player.tightSpiralTrait) })
+      break
+    case "FB":
+    case "HB":
+    case "WR":
+    case "TE":
+      if (player.fightForYardsTrait === YesNoTrait.YES) traits.push({ name: "Fight for Yards", value: formatYesNoTrait(player.fightForYardsTrait) })
+      if (player.yACCatchTrait === YesNoTrait.YES) traits.push({ name: "YAC Catch", value: formatYesNoTrait(player.yACCatchTrait) })
+      if (player.posCatchTrait === YesNoTrait.YES) traits.push({ name: "Possession Catch", value: formatYesNoTrait(player.posCatchTrait) })
+      if (player.hPCatchTrait === YesNoTrait.YES) traits.push({ name: "Aggressive Catch", value: formatYesNoTrait(player.hPCatchTrait) })
+      if (player.feetInBoundsTrait === YesNoTrait.YES) traits.push({ name: "Feet In Bounds", value: formatYesNoTrait(player.feetInBoundsTrait) })
+      if (player.dropOpenPassTrait === YesNoTrait.YES) traits.push({ name: "Drops Passes", value: formatYesNoTrait(player.dropOpenPassTrait) })
+      break
+    case "LEDGE":
+    case "REDGE":
+    case "DT":
+      if (player.dLSwimTrait === YesNoTrait.YES) traits.push({ name: "DL Swim", value: formatYesNoTrait(player.dLSwimTrait) })
+      if (player.dLSpinTrait === YesNoTrait.YES) traits.push({ name: "DL Spin", value: formatYesNoTrait(player.dLSpinTrait) })
+      if (player.dLBullRushTrait === YesNoTrait.YES) traits.push({ name: "DL Bull Rush", value: formatYesNoTrait(player.dLBullRushTrait) })
+      if (player.highMotorTrait === YesNoTrait.YES) traits.push({ name: "High Motor", value: formatYesNoTrait(player.highMotorTrait) })
+      if (player.stripBallTrait === YesNoTrait.YES) traits.push({ name: "Strip Ball", value: formatYesNoTrait(player.stripBallTrait) })
+      break
+    case "SAM":
+    case "WILL":
+    case "MIKE":
+      styles.push({ name: "LB Style", value: formatLbStyle(player.lBStyleTrait) })
+      styles.push({ name: "Play Ball", value: formatPlayBallTrait(player.playBallTrait) })
+      if (player.dLSwimTrait === YesNoTrait.YES) traits.push({ name: "DL Swim", value: formatYesNoTrait(player.dLSwimTrait) })
+      if (player.dLSpinTrait === YesNoTrait.YES) traits.push({ name: "DL Spin", value: formatYesNoTrait(player.dLSpinTrait) })
+      if (player.dLBullRushTrait === YesNoTrait.YES) traits.push({ name: "DL Bull Rush", value: formatYesNoTrait(player.dLBullRushTrait) })
+      if (player.highMotorTrait === YesNoTrait.YES) traits.push({ name: "High Motor", value: formatYesNoTrait(player.highMotorTrait) })
+      if (player.bigHitTrait === YesNoTrait.YES) traits.push({ name: "Big Hitter", value: formatYesNoTrait(player.bigHitTrait) })
+      if (player.stripBallTrait === YesNoTrait.YES) traits.push({ name: "Strip Ball", value: formatYesNoTrait(player.stripBallTrait) })
+      break
+    case "CB":
+    case "FS":
+    case "SS":
+      styles.push({ name: "Play Ball", value: formatPlayBallTrait(player.playBallTrait) })
+      if (player.highMotorTrait === YesNoTrait.YES) traits.push({ name: "High Motor", value: formatYesNoTrait(player.highMotorTrait) })
+      if (player.bigHitTrait === YesNoTrait.YES) traits.push({ name: "Big Hitter", value: formatYesNoTrait(player.bigHitTrait) })
+      if (player.stripBallTrait === YesNoTrait.YES) traits.push({ name: "Strip Ball", value: formatYesNoTrait(player.stripBallTrait) })
+      break
+  }
+
+  return { styles, traits }
+}
+
+function formatRatingSection(title: string, attrs: Array<{ name: string, value: number }>): string {
+  if (attrs.length === 0) return ""
+  const lines: string[] = [`### ${title}`]
+  for (let i = 0; i < attrs.length; i += 3) {
+    const row = attrs.slice(i, i + 3).map(a => `**${a.name}:** ${a.value}`).join(" | ")
+    lines.push(`> ${row}`)
+  }
+  return lines.join("\n")
+}
+
+function formatFullRatings(player: Player, teams: TeamList, logos: LeagueLogos) {
+  const teamAbbr = getTeamAbbr(player.teamId, teams)
+  const { physical, primary, secondary } = getAllRatingsByPosition(player)
+  const { styles, traits } = getAllPositionalTraits(player)
+
+  const physicalSection = formatRatingSection("Physical", physical)
+  const primarySection = formatRatingSection("Primary Skills", primary)
+  const secondarySection = secondary.length > 0 ? formatRatingSection("Secondary", secondary) : ""
+
+  let stylesSection = ""
+  if (styles.length > 0) {
+    stylesSection = "\n### Styles\n" + styles.map(s => `> **${s.name}:** ${s.value}`).join(" | ")
+  }
+
+  let traitsSection = ""
+  if (traits.length > 0) {
+    traitsSection = "\n### Traits\n" + traits.map(t => `> ${t.name} ${t.value}`).join(" ")
+  }
+
+  const abilities = player.signatureSlotList && player.signatureSlotList.length > 0
+    ? "\n### Abilities\n> " + player.signatureSlotList
+      .filter(ability => !ability.isEmpty && ability.signatureAbility)
+      .map(ability => ability.signatureAbility?.signatureTitle || "Unnamed")
+      .join(", ")
+    : ""
+
+  return `# ${getTeamEmoji(teamAbbr, logos)} ${player.position} ${player.firstName} ${player.lastName}
+## ${getDevTraitName(player.devTrait, player.yearsPro)} **${player.playerBestOvr} OVR**
+${physicalSection}
+${primarySection}
+${secondarySection}${stylesSection}${traitsSection}${abilities}`
+}
+
+function formatContract(player: Player, teams: TeamList, logos: LeagueLogos) {
+  const teamAbbr = getTeamAbbr(player.teamId, teams)
+  const team = player.teamId !== 0 ? teams.getTeamForId(player.teamId) : null
+
+  const isFreeAgent = player.isFreeAgent || player.teamId === 0
+
+  let contractDetails = ""
+
+  if (isFreeAgent) {
+    contractDetails = `## 🏷️ Free Agent
+
+### Asking Price
+> **Desired Salary:** ${formatMoney(player.desiredSalary)}/yr
+> **Desired Bonus:** ${formatMoney(player.desiredBonus)}
+> **Desired Length:** ${player.desiredLength} years`
+  } else {
+    const totalValue = (player.contractSalary * player.contractLength) + player.contractBonus
+
+    contractDetails = `## 📋 Current Contract
+
+### Contract Value
+> **Total Value:** ${formatMoney(totalValue)}
+> **Length:** ${player.contractLength} years (${player.contractYearsLeft} remaining)
+
+### Annual Breakdown
+> **Base Salary:** ${formatMoney(player.contractSalary)}/yr
+> **Signing Bonus:** ${formatMoney(player.contractBonus)}
+> **Cap Hit:** ${formatMoney(player.capHit)}
+
+### Release Info
+> **Dead Cap:** ${formatMoney(player.capReleasePenalty)}
+> **Cap Savings:** ${formatMoney(player.capReleaseNetSavings)}`
+  }
+
+  return `# ${getTeamEmoji(teamAbbr, logos)} ${player.position} ${player.firstName} ${player.lastName}
+**${player.playerBestOvr} OVR** | Age ${player.age} | ${player.yearsPro} yrs pro
+${contractDetails}`
+}
+
+type GameStatLine = { scheduleId: string, type: string, line: string }
+
+function formatStatsGrouped(stats: PlayerStats): GameStatLine[] {
+  const formattedStats: GameStatLine[] = []
+
   if (stats[PlayerStatType.PASSING]) {
     stats[PlayerStatType.PASSING].forEach(ps => {
-      const individualStat = []
-      individualStat.push(`${ps.passComp}/${ps.passAtt}`)
-      individualStat.push(`${ps.passYds} PASS YDS`)
-      if (ps.passTDs > 0) {
-        individualStat.push(`${ps.passTDs} TD`)
-      }
-      if (ps.passInts > 0) {
-        individualStat.push(`${ps.passInts} INT`)
-      }
-      individualStat.push(`${ps.passerRating.toFixed(1)} RTG`)
-      formattedStats.push({ scheduleId: formatGameKey(ps), value: individualStat.join(", ") })
-    });
+      const pct = ps.passAtt > 0 ? ((ps.passComp / ps.passAtt) * 100).toFixed(0) : "0"
+      let line = `**${ps.passComp}/${ps.passAtt}** (${pct}%) | **${ps.passYds}** yds`
+      if (ps.passTDs > 0) line += ` | **${ps.passTDs}** TD`
+      if (ps.passInts > 0) line += ` | ${ps.passInts} INT`
+      line += ` | ${ps.passerRating.toFixed(1)} rtg`
+      formattedStats.push({ scheduleId: formatGameKey(ps), type: "pass", line })
+    })
   }
+
   if (stats[PlayerStatType.RUSHING]) {
     stats[PlayerStatType.RUSHING].forEach(rs => {
-      const individualStat = [];
       if (rs.rushAtt > 0) {
-        individualStat.push(`${rs.rushAtt} ATT`);
-        individualStat.push(`${rs.rushYds} RSH YDS`);
+        let line = `**${rs.rushAtt}** att | **${rs.rushYds}** yds`
+        if (rs.rushTDs > 0) line += ` | **${rs.rushTDs}** TD`
+        if (rs.rushFum > 0) line += ` | ${rs.rushFum} fum`
+        line += ` | ${rs.rushYdsPerAtt.toFixed(1)} avg`
+        formattedStats.push({ scheduleId: formatGameKey(rs), type: "rush", line })
       }
-      if (rs.rushTDs > 0) {
-        individualStat.push(`${rs.rushTDs} TD`);
-      }
-      if (rs.rushFum > 0) {
-        individualStat.push(`${rs.rushFum} FUM`);
-      }
-      if (rs.rushYdsPerAtt > 0) {
-        individualStat.push(`${rs.rushYdsPerAtt.toFixed(1)} AVG`);
-      }
-      formattedStats.push({ scheduleId: formatGameKey(rs), value: individualStat.join(", ") });
-    });
+    })
   }
 
   if (stats[PlayerStatType.RECEIVING]) {
     stats[PlayerStatType.RECEIVING].forEach(rs => {
-      const individualStat = [];
-      individualStat.push(`${rs.recCatches} REC`);
-      individualStat.push(`${rs.recYds} YDS`);
-      if (rs.recTDs > 0) {
-        individualStat.push(`${rs.recTDs} TD`);
-      }
-      formattedStats.push({ scheduleId: formatGameKey(rs), value: individualStat.join(", ") });
-    });
+      let line = `**${rs.recCatches}** rec | **${rs.recYds}** yds`
+      if (rs.recTDs > 0) line += ` | **${rs.recTDs}** TD`
+      if (rs.recYdsPerCatch > 0) line += ` | ${rs.recYdsPerCatch.toFixed(1)} avg`
+      formattedStats.push({ scheduleId: formatGameKey(rs), type: "rec", line })
+    })
   }
 
   if (stats[PlayerStatType.DEFENSE]) {
     stats[PlayerStatType.DEFENSE].forEach(ds => {
-      const individualStat = [];
-      individualStat.push(`${ds.defTotalTackles} TKL`);
-      if (ds.defSacks > 0) {
-        individualStat.push(`${ds.defSacks} SCK`);
-      }
-      if (ds.defInts > 0) {
-        individualStat.push(`${ds.defInts} INT`);
-      }
-      if (ds.defFumRec > 0) {
-        individualStat.push(`${ds.defFumRec} FR`);
-      }
-      if (ds.defForcedFum > 0) {
-        individualStat.push(`${ds.defForcedFum} FF`);
-      }
-      if (ds.defTDs > 0) {
-        individualStat.push(`${ds.defTDs} TD`);
-      }
-      if (ds.defDeflections > 0) {
-        individualStat.push(`${ds.defDeflections} PD`);
-      }
-      formattedStats.push({ scheduleId: formatGameKey(ds), value: individualStat.join(", ") });
-    });
+      const parts = [`**${ds.defTotalTackles}** tkl`]
+      if (ds.defSacks > 0) parts.push(`**${ds.defSacks}** sck`)
+      if (ds.defInts > 0) parts.push(`**${ds.defInts}** INT`)
+      if (ds.defForcedFum > 0) parts.push(`${ds.defForcedFum} FF`)
+      if (ds.defFumRec > 0) parts.push(`${ds.defFumRec} FR`)
+      if (ds.defTDs > 0) parts.push(`**${ds.defTDs}** TD`)
+      if (ds.defDeflections > 0) parts.push(`${ds.defDeflections} PD`)
+      formattedStats.push({ scheduleId: formatGameKey(ds), type: "def", line: parts.join(" | ") })
+    })
   }
 
   if (stats[PlayerStatType.KICKING]) {
     stats[PlayerStatType.KICKING].forEach(ks => {
-      const individualStat = [];
-      individualStat.push(`FG ${ks.fGMade}/${ks.fGAtt}`);
-      individualStat.push(`XP ${ks.xPMade}/${ks.xPAtt}`);
-      if (ks.fG50PlusAtt > 0) {
-        individualStat.push(`50+ ${ks.fG50PlusMade}/${ks.fG50PlusAtt}`);
-      }
-      if (ks.fGLongest > 0) {
-        individualStat.push(`${ks.fGLongest} LNG`);
-      }
-      individualStat.push(`${ks.kickPts} PTS`);
-      formattedStats.push({ scheduleId: formatGameKey(ks), value: individualStat.join(", ") });
-    });
+      const fgPct = ks.fGAtt > 0 ? ((ks.fGMade / ks.fGAtt) * 100).toFixed(0) : "0"
+      let line = `**${ks.fGMade}/${ks.fGAtt}** FG (${fgPct}%) | **${ks.xPMade}/${ks.xPAtt}** XP`
+      if (ks.fGLongest > 0) line += ` | ${ks.fGLongest} lng`
+      line += ` | **${ks.kickPts}** pts`
+      formattedStats.push({ scheduleId: formatGameKey(ks), type: "kick", line })
+    })
   }
 
   if (stats[PlayerStatType.PUNTING]) {
     stats[PlayerStatType.PUNTING].forEach(ps => {
-      const individualStat = [];
-      individualStat.push(`${ps.puntAtt} PUNTS`);
-      individualStat.push(`${ps.puntYds} YDS`);
-      individualStat.push(`${ps.puntYdsPerAtt.toFixed(1)} AVG`);
-      individualStat.push(`${ps.puntNetYdsPerAtt.toFixed(1)} NET`);
-      if (ps.puntsIn20 > 0) {
-        individualStat.push(`${ps.puntsIn20} INS 20`);
-      }
-      if (ps.puntTBs > 0) {
-        individualStat.push(`${ps.puntTBs} TB`);
-      }
-      if (ps.puntsBlocked > 0) {
-        individualStat.push(`${ps.puntsBlocked} BLK`);
-      }
-      formattedStats.push({ scheduleId: formatGameKey(ps), value: individualStat.join(", ") });
-    });
+      let line = `**${ps.puntAtt}** punts | **${ps.puntYds}** yds | ${ps.puntYdsPerAtt.toFixed(1)} avg`
+      if (ps.puntsIn20 > 0) line += ` | ${ps.puntsIn20} in20`
+      if (ps.puntTBs > 0) line += ` | ${ps.puntTBs} TB`
+      formattedStats.push({ scheduleId: formatGameKey(ps), type: "punt", line })
+    })
   }
+
   return formattedStats
 }
 
@@ -1097,41 +1434,72 @@ function formatGameKey(g: { scheduleId: number, weekIndex: number, seasonIndex: 
   return `${g.scheduleId}|${g.weekIndex}|${g.seasonIndex}`
 }
 
-function formatGame(game: MaddenGame, player: Player, teams: TeamList) {
-  const playerTeam = teams.getTeamForId(player.teamId).teamId
-  const homeTeam = teams.getTeamForId(game.homeTeamId).teamId
-  const awayTeam = teams.getTeamForId(game.awayTeamId).teamId
-  const opponentTeam = playerTeam === awayTeam ? homeTeam : awayTeam
-  const opponent = getTeamAbbr(opponentTeam, teams)
-  return `${formatWeek(game)} vs ${opponent.padEnd(3)} ${formatGameEmoji(game, playerTeam, teams)} ${formatScore(game)}:`
+const STAT_TYPE_ICONS: Record<string, string> = {
+  pass: "🎯",
+  rush: "🏃🏿",
+  rec: "🙌🏿",
+  def: "🛡️",
+  kick: "🦶🏿",
+  punt: "📍"
+}
+
+function formatGameHeader(game: MaddenGame, player: Player, teams: TeamList, logos: LeagueLogos) {
+  const playerTeam = teams.getTeamForId(player.teamId)?.teamId || 0
+  const homeTeam = teams.getTeamForId(game.homeTeamId)?.teamId || 0
+  const awayTeam = teams.getTeamForId(game.awayTeamId)?.teamId || 0
+  const opponentTeamId = playerTeam === awayTeam ? homeTeam : awayTeam
+  const opponentAbbr = getTeamAbbr(opponentTeamId, teams)
+  const opponentEmoji = getTeamEmoji(opponentAbbr, logos)
+  const isHome = playerTeam === homeTeam
+  const location = isHome ? "vs" : "@"
+
+  return `**${formatWeek(game)}** ${location} ${opponentEmoji} ${formatGameEmoji(game, playerTeam, teams)} ${formatScore(game)}`
 }
 
 function formatWeeklyStats(player: Player, teams: TeamList, stats: PlayerStats, games: MaddenGame[], logos: LeagueLogos) {
   const currentSeason = Math.max(...games.map(g => g.seasonIndex))
   const currentGameIds = new Set(games.filter(g => g.seasonIndex === currentSeason && g.stageIndex > 0).map(g => formatGameKey(g)))
   const gameResults = Object.groupBy(games.filter(g => currentGameIds.has(formatGameKey(g))), g => formatGameKey(g))
-  const gameStats = formatStats(stats)
-  const weekStats = Object.entries(Object.groupBy(gameStats.filter(s => currentGameIds.has(s.scheduleId)), g => g.scheduleId)).map(gameStat => {
-    const [gameKey, stats] = gameStat
-    const stat = stats?.map(s => s.value).join(", ") || ""
+  const gameStats = formatStatsGrouped(stats)
+
+  // Group stats by game
+  const statsByGame = Object.groupBy(gameStats.filter(s => currentGameIds.has(s.scheduleId)), g => g.scheduleId)
+
+  const weekStats = Object.entries(statsByGame).map(([gameKey, gameStatLines]) => {
     const result = gameResults[gameKey]
-    if (!result) {
-      return { weekIndex: -1, value: `` }
-    }
+    if (!result) return { weekIndex: -1, value: "" }
+
     const game = result[0]
+    const header = formatGameHeader(game, player, teams, logos)
+
+    // Format each stat type on its own line with icon
+    const statLines = gameStatLines?.map(s => `> ${STAT_TYPE_ICONS[s.type] || "📊"} ${s.line}`) || []
+
     return {
-      weekIndex: game.weekIndex, value: `${formatGame(game, player, teams)} ${stat}`
+      weekIndex: game.weekIndex,
+      value: `${header}\n${statLines.join("\n")}`
     }
-  }).sort((a, b) => (a.weekIndex < b.weekIndex ? -1 : 1)).map(g => g.value)
+  }).filter(g => g.value).sort((a, b) => a.weekIndex - b.weekIndex).map(g => g.value)
 
   const teamAbbr = getTeamAbbr(player.teamId, teams)
-  const joinedWeekStats = weekStats.join("\n")
-  return `
-  # ${getTeamEmoji(teamAbbr, logos)} ${player.position} ${player.firstName} ${player.lastName}
-## ${getDevTraitName(player.devTrait, player.yearsPro)} **${player.playerBestOvr} OVR**
-## Stats
-${joinedWeekStats}
-`
+
+  // Calculate record
+  const wins = games.filter(g => currentGameIds.has(formatGameKey(g))).filter(g => {
+    const playerTeam = teams.getTeamForId(player.teamId)?.teamId || 0
+    if (g.awayScore > g.homeScore) return teams.getTeamForId(g.awayTeamId)?.teamId === playerTeam
+    if (g.homeScore > g.awayScore) return teams.getTeamForId(g.homeTeamId)?.teamId === playerTeam
+    return false
+  }).length
+  const losses = games.filter(g => currentGameIds.has(formatGameKey(g))).filter(g => {
+    const playerTeam = teams.getTeamForId(player.teamId)?.teamId || 0
+    if (g.awayScore > g.homeScore) return teams.getTeamForId(g.homeTeamId)?.teamId === playerTeam
+    if (g.homeScore > g.awayScore) return teams.getTeamForId(g.awayTeamId)?.teamId === playerTeam
+    return false
+  }).length
+
+  return `# ${getTeamEmoji(teamAbbr, logos)} ${player.position} ${player.firstName} ${player.lastName}
+## ${getDevTraitName(player.devTrait, player.yearsPro)} **${player.playerBestOvr} OVR** | ${wins}-${losses}
+${weekStats.join("\n\n")}`
 }
 export type StatItem = {
   value: number;
@@ -1189,59 +1557,76 @@ export type SeasonAggregation = {
 }
 
 function formatSeasonAggregation(agg: SeasonAggregation): string {
-  let result = "";
-  const seasonIndices = Object.keys(agg).map(Number).sort((a, b) => a - b);
+  const seasonIndices = Object.keys(agg).map(Number).sort((a, b) => b - a) // Most recent first
+  const seasons: string[] = []
 
   for (const seasonIndex of seasonIndices) {
-    const seasonStats = agg[seasonIndex];
-    const statItems: string[] = [];
-    result += `**${seasonIndex + MADDEN_SEASON}**: `;
+    const s = agg[seasonIndex]
+    const lines: string[] = []
 
-    if (seasonStats.passPercent) {
-      statItems.push(`${seasonStats.passPercent.top}/${seasonStats.passPercent.bottom}`);
+    // Passing stats
+    if (s.passPercent && s.passYds) {
+      const pct = s.passPercent.bottom > 0 ? ((s.passPercent.top / s.passPercent.bottom) * 100).toFixed(1) : "0"
+      let line = `> 🎯 **${s.passPercent.top}/${s.passPercent.bottom}** (${pct}%) | **${s.passYds.value.toLocaleString()}** yds`
+      if (s.passTDs) line += ` | **${s.passTDs.value}** TD`
+      if (s.passInts && s.passInts.value > 0) line += ` | ${s.passInts.value} INT`
+      if (s.passSacks && s.passSacks.value > 0) line += ` | ${s.passSacks.value} sck`
+      lines.push(line)
     }
-    if (seasonStats.passYds) statItems.push(`${seasonStats.passYds.value} ${seasonStats.passYds.name}`);
-    if (seasonStats.passTDs) statItems.push(`${seasonStats.passTDs.value} ${seasonStats.passTDs.name}`);
-    if (seasonStats.passInts) statItems.push(`${seasonStats.passInts.value} ${seasonStats.passInts.name}`);
-    if (seasonStats.passSacks) statItems.push(`${seasonStats.passSacks.value} ${seasonStats.passSacks.name}`);
 
-    if (seasonStats.rushAtt) statItems.push(`${seasonStats.rushAtt.value} ${seasonStats.rushAtt.name}`);
-    if (seasonStats.rushYds) statItems.push(`${seasonStats.rushYds.value} ${seasonStats.rushYds.name}`);
-    if (seasonStats.rushTDs) statItems.push(`${seasonStats.rushTDs.value} ${seasonStats.rushTDs.name}`);
-    if (seasonStats.rushFum && seasonStats.rushFum.value > 0) statItems.push(`${seasonStats.rushFum.value} ${seasonStats.rushFum.name}`);
-
-    if (seasonStats.recCatches) statItems.push(`${seasonStats.recCatches.value} ${seasonStats.recCatches.name}`);
-    if (seasonStats.recYds) statItems.push(`${seasonStats.recYds.value} ${seasonStats.recYds.name}`);
-    if (seasonStats.recTDs) statItems.push(`${seasonStats.recTDs.value} ${seasonStats.recTDs.name}`);
-    if (seasonStats.recDrops && seasonStats.recDrops.value > 0) statItems.push(`${seasonStats.recDrops.value} ${seasonStats.recDrops.name}`);
-
-    if (seasonStats.defTotalTackles && seasonStats.defTotalTackles.value > 0) statItems.push(`${seasonStats.defTotalTackles.value} ${seasonStats.defTotalTackles.name}`);
-    if (seasonStats.defSacks && seasonStats.defSacks.value > 0) statItems.push(`${seasonStats.defSacks.value} ${seasonStats.defSacks.name}`);
-    if (seasonStats.defInts && seasonStats.defInts.value > 0) statItems.push(`${seasonStats.defInts.value} ${seasonStats.defInts.name}`);
-    if (seasonStats.defFumRec && seasonStats.defFumRec.value > 0) statItems.push(`${seasonStats.defFumRec.value} ${seasonStats.defFumRec.name}`);
-    if (seasonStats.defForcedFum && seasonStats.defForcedFum.value > 0) statItems.push(`${seasonStats.defForcedFum.value} ${seasonStats.defForcedFum.name}`);
-    if (seasonStats.defTDs && seasonStats.defTDs.value > 0) statItems.push(`${seasonStats.defTDs.value} ${seasonStats.defTDs.name}`);
-
-    if (seasonStats.fGMade && seasonStats.fGAtt) {
-      statItems.push(`${seasonStats.fGMade.value}/${seasonStats.fGAtt.value} FG`);
+    // Rushing stats
+    if (s.rushAtt && s.rushYds) {
+      const avg = s.rushAtt.value > 0 ? (s.rushYds.value / s.rushAtt.value).toFixed(1) : "0"
+      let line = `> 🏃🏿 **${s.rushAtt.value}** att | **${s.rushYds.value.toLocaleString()}** yds`
+      if (s.rushTDs && s.rushTDs.value > 0) line += ` | **${s.rushTDs.value}** TD`
+      if (s.rushFum && s.rushFum.value > 0) line += ` | ${s.rushFum.value} fum`
+      line += ` | ${avg} avg`
+      lines.push(line)
     }
-    if (seasonStats.xPMade && seasonStats.xPAtt) {
-      statItems.push(`${seasonStats.xPMade.value}/${seasonStats.xPAtt.value} XP`);
+
+    // Receiving stats
+    if (s.recCatches && s.recYds) {
+      const avg = s.recCatches.value > 0 ? (s.recYds.value / s.recCatches.value).toFixed(1) : "0"
+      let line = `> 🙌🏿 **${s.recCatches.value}** rec | **${s.recYds.value.toLocaleString()}** yds`
+      if (s.recTDs && s.recTDs.value > 0) line += ` | **${s.recTDs.value}** TD`
+      line += ` | ${avg} avg`
+      lines.push(line)
     }
-    if (seasonStats.kickPts) statItems.push(`${seasonStats.kickPts.value} ${seasonStats.kickPts.name}`);
 
-    if (seasonStats.puntYds) statItems.push(`${seasonStats.puntYds.value} ${seasonStats.puntYds.name}`);
-    if (seasonStats.puntAtt) statItems.push(`${seasonStats.puntAtt.value} ${seasonStats.puntAtt.name}`);
-    if (seasonStats.puntsIn20) statItems.push(`${seasonStats.puntsIn20.value} ${seasonStats.puntsIn20.name}`);
-    if (seasonStats.puntNetYds) statItems.push(`${seasonStats.puntNetYds.value} ${seasonStats.puntNetYds.name}`);
-    if (seasonStats.puntsBlocked) statItems.push(`${seasonStats.puntsBlocked.value} ${seasonStats.puntsBlocked.name}`);
-    if (seasonStats.puntTBs) statItems.push(`${seasonStats.puntTBs.value} ${seasonStats.puntTBs.name}`);
+    // Defensive stats
+    if (s.defTotalTackles && s.defTotalTackles.value > 0) {
+      const parts = [`**${s.defTotalTackles.value}** tkl`]
+      if (s.defSacks && s.defSacks.value > 0) parts.push(`**${s.defSacks.value}** sck`)
+      if (s.defInts && s.defInts.value > 0) parts.push(`**${s.defInts.value}** INT`)
+      if (s.defForcedFum && s.defForcedFum.value > 0) parts.push(`${s.defForcedFum.value} FF`)
+      if (s.defFumRec && s.defFumRec.value > 0) parts.push(`${s.defFumRec.value} FR`)
+      if (s.defTDs && s.defTDs.value > 0) parts.push(`**${s.defTDs.value}** TD`)
+      lines.push(`> 🛡️ ${parts.join(" | ")}`)
+    }
 
-    result += statItems.join(", ");
-    result += "\n";
+    // Kicking stats
+    if (s.fGMade && s.fGAtt) {
+      const fgPct = s.fGAtt.value > 0 ? ((s.fGMade.value / s.fGAtt.value) * 100).toFixed(0) : "0"
+      let line = `> 🦶🏿 **${s.fGMade.value}/${s.fGAtt.value}** FG (${fgPct}%)`
+      if (s.xPMade && s.xPAtt) line += ` | **${s.xPMade.value}/${s.xPAtt.value}** XP`
+      if (s.kickPts) line += ` | **${s.kickPts.value}** pts`
+      lines.push(line)
+    }
+
+    // Punting stats
+    if (s.puntAtt && s.puntYds) {
+      const avg = s.puntAtt.value > 0 ? (s.puntYds.value / s.puntAtt.value).toFixed(1) : "0"
+      let line = `> 📍 **${s.puntAtt.value}** punts | **${s.puntYds.value}** yds | ${avg} avg`
+      if (s.puntsIn20 && s.puntsIn20.value > 0) line += ` | ${s.puntsIn20.value} in20`
+      lines.push(line)
+    }
+
+    if (lines.length > 0) {
+      seasons.push(`### ${seasonIndex + MADDEN_SEASON} Season\n${lines.join("\n")}`)
+    }
   }
 
-  return result.trim();
+  return seasons.join("\n\n")
 }
 
 
@@ -1507,32 +1892,25 @@ function formatSeasonStats(player: Player, stats: PlayerStats, teams: TeamList, 
   const agg = aggregateSeason(stats)
   const formattedAgg = formatSeasonAggregation(agg)
 
-  return `
-  # ${getTeamEmoji(teamAbbr, logos)} ${player.position} ${player.firstName} ${player.lastName}
+  return `# ${getTeamEmoji(teamAbbr, logos)} ${player.position} ${player.firstName} ${player.lastName}
 ## ${getDevTraitName(player.devTrait, player.yearsPro)} **${player.playerBestOvr} OVR**
-## Stats
-${formattedAgg}
-`
+${formattedAgg}`
 }
 
 function formatPlayerList(players: Player[], teams: TeamList, logos: LeagueLogos) {
-  let message = "# Player Results:\n";
-
-  for (const player of players) {
+  const playerCards = players.map(player => {
     const teamName = getTeamAbbr(player.teamId, teams)
-    const fullName = `${player.firstName} ${player.lastName}`;
-    const heightFeet = Math.floor(player.height / 12);
-    const heightInches = player.height % 12;
-    const heightFormatted = `${heightFeet}'${heightInches}"`;
-    const teamEmoji = getTeamEmoji(teamName, logos) === SnallabotTeamEmojis.NFL ? `**${teamName.toUpperCase()}**` : getTeamEmoji(teamName, logos)
-    const experience = getSeasonFormatting(player.yearsPro)
+    const fullName = `${player.firstName} ${player.lastName}`
+    const heightFeet = Math.floor(player.height / 12)
+    const heightInches = player.height % 12
+    const teamEmoji = getTeamEmoji(teamName, logos) === SnallabotTeamEmojis.NFL ? `**${teamName}**` : getTeamEmoji(teamName, logos)
     const devTraitEmoji = getDevTraitName(player.devTrait, player.yearsPro)
-    message += `## ${teamEmoji} ${player.position} ${fullName} - ${player.playerBestOvr} OVR\n`;
-    message += `${devTraitEmoji} | ${player.age} yrs | ${experience} | ${heightFormatted} | ${player.weight} lbs\n\n`;
-  }
 
-  return message;
+    return `### ${teamEmoji} ${player.position} ${fullName}
+> ${devTraitEmoji} **${player.playerBestOvr} OVR** | ${player.age} yrs | ${heightFeet}'${heightInches}" ${player.weight}lbs`
+  })
 
+  return `# Player Results\n${playerCards.join("\n")}`
 }
 
 type PlayerFound = { teamAbbr: string, rosterId: number, firstName: string, lastName: string, teamId: number, position: string }
@@ -1600,7 +1978,7 @@ async function searchPlayerListForQuery(textQuery: string, leagueId: string): Pr
 }
 
 export default {
-  async handleCommand(command: Command, client: DiscordClient) {
+  async handleCommand(command: Command, client: DiscordClient, _: Firestore, ctx: ParameterizedContext) {
     const { guild_id, token } = command
     if (!command.data.options) {
       throw new Error("logger command not defined properly")
@@ -1613,16 +1991,15 @@ export default {
         throw new Error("player get misconfigured")
       }
       const playerSearch = (playerCommand.options[0] as APIApplicationCommandInteractionDataStringOption).value
+      respond(ctx, deferMessage())
       showPlayerCard(playerSearch, client, token, guild_id)
-      return deferMessage()
-
     } else if (subCommand === "list") {
       if (!playerCommand.options || !playerCommand.options[0]) {
         throw new Error("player get misconfigured")
       }
       const playerSearch = (playerCommand.options[0] as APIApplicationCommandInteractionDataStringOption).value
+      respond(ctx, deferMessage())
       showPlayerList(playerSearch, client, token, guild_id)
-      return deferMessage()
     } else {
       throw new Error(`Missing player command ${subCommand}`)
     }
@@ -1715,6 +2092,8 @@ export default {
           showPlayerWeeklyStats(rosterId, client, interaction.token, interaction.guild_id, pagination)
         } else if (selected === PlayerSelection.PLAYER_SEASON_STATS) {
           showPlayerYearlyStats(rosterId, client, interaction.token, interaction.guild_id, pagination)
+        } else if (selected === PlayerSelection.PLAYER_CONTRACT) {
+          showPlayerContract(rosterId, client, interaction.token, interaction.guild_id, pagination)
         } else {
           console.error("should not have gotten here")
         }
@@ -1765,4 +2144,4 @@ export default {
       type: InteractionResponseType.DeferredMessageUpdate,
     }
   }
-}
+} as CommandHandler & AutocompleteHandler & MessageComponentHandler

@@ -1,15 +1,14 @@
-import { Command } from "../commands_handler"
-import { DiscordClient, deferMessageInvisible } from "../discord_utils"
+import { ParameterizedContext } from "koa"
+import { CommandHandler, Command } from "../commands_handler"
+import { respond, DiscordClient, deferMessageInvisible, createProdClient } from "../discord_utils"
 import { APIApplicationCommandInteractionDataIntegerOption, APIApplicationCommandInteractionDataSubcommandOption, ApplicationCommandOptionType, ApplicationCommandType, RESTPostAPIApplicationCommandsJSONBody } from "discord-api-types/v10"
-import { EAAccountError, ExportContext, exporterForLeague } from "../../dashboard/ea_client"
+import { Firestore } from "firebase-admin/firestore"
+import { ExportContext, exporterForLeague, ExportProgressCallback } from "../../dashboard/ea_client"
 import { discordLeagueView } from "../../db/view"
+import { DiscordIdType, ChannelId } from "../settings_db"
 
 
-async function handleExport(guildId: string, week: number, token: string, client: DiscordClient) {
-  await client.editOriginalInteraction(token, {
-    content: "exporting now...",
-    flags: 64
-  })
+async function handleExport(guildId: string, week: number, token: string, channelId: string, client: DiscordClient) {
   const league = await discordLeagueView.createView(guildId)
   if (!league) {
     await client.editOriginalInteraction(token, {
@@ -18,38 +17,86 @@ async function handleExport(guildId: string, week: number, token: string, client
     })
     return
   }
+
+  // For all_weeks export, use progress updates via channel messages
+  const isFullExport = week === 101
+  const channel: ChannelId = { id: channelId, id_type: DiscordIdType.CHANNEL }
+  const prodClient = createProdClient()
+
+  // Track start time for duration reporting
+  const startTime = Date.now()
+
+  // Create progress callback that sends channel messages
+  const onProgress: ExportProgressCallback = async (message: string) => {
+    try {
+      await prodClient.createMessage(channel, `📤 ${message}`, [])
+    } catch (e) {
+      console.error("[EXPORT] Failed to send progress message:", e)
+    }
+  }
+
   try {
     const exporter = await exporterForLeague(Number(league.leagueId), ExportContext.MANUAL)
-    if (week === 100) {
+
+    if (isFullExport) {
+      // For full export, send initial message and use progress callback
+      await client.editOriginalInteraction(token, {
+        content: "Starting full league export... Progress updates will be posted below.",
+        flags: 64
+      })
+      await onProgress("Starting full league export...")
+      await exporter.exportAllWeeks(onProgress)
+    } else if (week === 100) {
+      await client.editOriginalInteraction(token, {
+        content: "Exporting current week...",
+        flags: 64
+      })
       await exporter.exportCurrentWeek()
-    } else if (week === 101) {
-      await exporter.exportAllWeeks()
     } else {
+      await client.editOriginalInteraction(token, {
+        content: `Exporting week ${week}...`,
+        flags: 64
+      })
       await exporter.exportSpecificWeeks([{ weekIndex: week - 1, stage: 1 }])
     }
-    await client.editOriginalInteraction(token, {
-      content: "finished exporting!",
-      flags: 64
-    })
-  } catch (e) {
-    if (e instanceof EAAccountError) {
-      await client.editOriginalInteraction(token, {
-        content: `Export failed :(, error: ${e} Guidance: ${e.troubleshoot}`,
-        flags: 64
-      })
-    } else {
-      await client.editOriginalInteraction(token, {
-        content: `Export failed :(, error: ${e}`,
-        flags: 64
-      })
+
+    const duration = Math.round((Date.now() - startTime) / 1000)
+    const durationStr = duration > 60 ? `${Math.floor(duration / 60)}m ${duration % 60}s` : `${duration}s`
+
+    if (isFullExport) {
+      await prodClient.createMessage(channel, `✅ **Export complete!** (took ${durationStr})`, [])
     }
 
+    // Try to update original interaction, but don't fail if token expired
+    try {
+      await client.editOriginalInteraction(token, {
+        content: `✅ Finished exporting! (took ${durationStr})`,
+        flags: 64
+      })
+    } catch (e) {
+      // Token likely expired for long exports, that's ok
+    }
+  } catch (e) {
+    const errorMsg = `Export failed: ${e}`
+
+    if (isFullExport) {
+      await prodClient.createMessage(channel, `❌ ${errorMsg}`, [])
+    }
+
+    try {
+      await client.editOriginalInteraction(token, {
+        content: `❌ ${errorMsg}`,
+        flags: 64
+      })
+    } catch (tokenError) {
+      // Token likely expired
+    }
   }
 }
 
 export default {
-  async handleCommand(command: Command, client: DiscordClient) {
-    const { guild_id, token } = command
+  async handleCommand(command: Command, client: DiscordClient, db: Firestore, ctx: ParameterizedContext) {
+    const { guild_id, token, channel_id } = command
     if (!command.data.options) {
       throw new Error("export command not defined properly")
     }
@@ -79,8 +126,8 @@ export default {
     if (!week) {
       throw new Error("export week mising")
     }
-    handleExport(guild_id, week, token, client)
-    return deferMessageInvisible()
+    respond(ctx, deferMessageInvisible())
+    handleExport(guild_id, week, token, channel_id, client)
   },
   commandDefinition(): RESTPostAPIApplicationCommandsJSONBody {
     return {
@@ -116,4 +163,4 @@ export default {
       ],
     }
   }
-}
+} as CommandHandler

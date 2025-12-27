@@ -36,6 +36,8 @@ export type TeamAssignment = { discord_user?: UserId, discord_role?: RoleId }
 export type TeamAssignments = { [key: string]: TeamAssignment }
 export type TeamConfiguration = { channel: ChannelId, messageId: MessageId, useRoleUpdates: boolean, assignments: TeamAssignments }
 
+export type TransactionConfiguration = { channel: ChannelId }
+
 
 export type LeagueSettings = {
   commands: {
@@ -45,7 +47,8 @@ export type LeagueSettings = {
     broadcast?: BroadcastConfiguration,
     teams?: TeamConfiguration,
     waitlist?: WaitlistConfiguration,
-    madden_league?: MaddenLeagueConfiguration
+    madden_league?: MaddenLeagueConfiguration,
+    transactions?: TransactionConfiguration
   },
   guildId: string
 }
@@ -72,7 +75,8 @@ interface LeagueSettingsDB {
   updateAssignment(guildId: string, assignments: TeamAssignments): Promise<void>,
   removeAssignment(guildId: string, teamId: number | string): Promise<void>,
   removeAllAssignments(guildId: string): Promise<void>,
-  getLeagueSettingsForLeagueId(leagueId: string): Promise<LeagueSettings[]>
+  getLeagueSettingsForLeagueId(leagueId: string): Promise<LeagueSettings[]>,
+  configureTransactions(guildId: string, transactionSettings: TransactionConfiguration): Promise<void>
 }
 
 export function createWeekKey(season: number, week: number) {
@@ -237,6 +241,14 @@ const LeagueSettingsDB: LeagueSettingsDB = {
       .where('commands.madden_league.league_id', '==', leagueId)
       .get()
     return snapshot.docs.map(doc => ({ guildId: doc.id, ...doc.data() }) as LeagueSettings)
+  },
+
+  async configureTransactions(guildId: string, transactionSettings: TransactionConfiguration): Promise<void> {
+    await db.collection('league_settings').doc(guildId).set({
+      commands: {
+        transactions: transactionSettings
+      }
+    }, { merge: true })
   }
 }
 

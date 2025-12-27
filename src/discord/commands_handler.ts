@@ -50,6 +50,9 @@ import predictionsHandler from "./commands/predictions";
 import gotwHandler from "./commands/gotw";
 import pickemHandler from "./commands/pickem";
 import pickemLeaderboardHandler from "./commands/pickem_leaderboard";
+import teamStatsHandler from "./commands/team_stats";
+import awardsHandler from "./commands/awards";
+import transactionsHandler from "./commands/transactions";
 
 
 
@@ -57,6 +60,7 @@ export type Command = {
   command_name: string;
   token: string;
   guild_id: string;
+  channel_id: string;
   data: APIChatInputApplicationCommandInteractionData;
   member: APIInteractionGuildMember;
 };
@@ -127,6 +131,9 @@ const SlashCommands: CommandsHandler = {
   gotw: gotwHandler,
   pickem: pickemHandler,
   pickem_leaderboard: pickemLeaderboardHandler,
+  teamstats: teamStatsHandler,
+  awards: awardsHandler,
+  transactions: transactionsHandler,
 };
 
 const AutocompleteCommands: AutocompleteHandlers = {
@@ -135,6 +142,7 @@ const AutocompleteCommands: AutocompleteHandlers = {
   schedule: schedulesHandler as any,
   teamschedule: teamScheduleHandler as any,
   draft: draftHandler as any,
+  awards: awardsHandler as any,
 };
 
 const MessageComponents: MessageComponentHandlers = {

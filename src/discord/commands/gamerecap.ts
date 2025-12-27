@@ -37,8 +37,44 @@ async function showWeekGames(token: string, client: DiscordClient, league: strin
     const currentSeasonIndex = weeks[0]?.seasonIndex || 0
     const currentWeekIndex = weekIndex !== undefined ? weekIndex : weeks[0]?.weekIndex || 0
 
-    // Get games for the week
-    const allGames = await MaddenDB.getWeekScheduleForSeason(league, currentWeekIndex, currentSeasonIndex)
+    // Get games for the week - try to find completed games
+    let allGames: any[] = []
+    let targetWeekIndex = currentWeekIndex
+    let targetSeasonIndex = currentSeasonIndex
+
+    try {
+      // getWeekScheduleForSeason expects 1-based week number
+      allGames = await MaddenDB.getWeekScheduleForSeason(league, currentWeekIndex + 1, currentSeasonIndex)
+    } catch (e) {
+      console.warn(`No schedule for week ${currentWeekIndex + 1}, season ${currentSeasonIndex}. Trying to find recent games...`)
+
+      // Fallback: Get latest schedule AND playoff schedule, find most recent completed games
+      const [fullSchedule, playoffSchedule] = await Promise.all([
+        MaddenDB.getLatestSchedule(league),
+        MaddenDB.getPlayoffSchedule(league)
+      ])
+
+      // Combine regular and playoff games
+      const allSchedule = [...fullSchedule, ...playoffSchedule]
+      const completedFromSchedule = allSchedule
+        .filter((g: any) => g.status !== GameResult.NOT_PLAYED)
+        .sort((a: any, b: any) => {
+          // Sort by season desc, then week desc to get most recent first
+          if (a.seasonIndex !== b.seasonIndex) return b.seasonIndex - a.seasonIndex
+          return b.weekIndex - a.weekIndex
+        })
+
+      if (completedFromSchedule.length > 0) {
+        // Find the most recent week with completed games
+        const latestGame = completedFromSchedule[0]
+        targetWeekIndex = latestGame.weekIndex
+        targetSeasonIndex = latestGame.seasonIndex
+        allGames = completedFromSchedule.filter((g: any) =>
+          g.weekIndex === targetWeekIndex && g.seasonIndex === targetSeasonIndex
+        )
+      }
+    }
+
     const completedGames = allGames.filter((g: any) => g.status !== GameResult.NOT_PLAYED)
 
     if (completedGames.length === 0) {
@@ -47,15 +83,18 @@ async function showWeekGames(token: string, client: DiscordClient, league: strin
         components: [
           {
             type: ComponentType.TextDisplay,
-            content: `# No Completed Games\n\nNo completed games found for Week ${currentWeekIndex + 1}. Games must be played before generating recaps.`
+            content: `# No Completed Games\n\nNo completed games found for Week ${currentWeekIndex + 1}. Games must be played before generating recaps.\n\nTry selecting a specific week from the dropdown below.`
           }
         ]
       })
       return
     }
 
+    // Use the target week for display
+    const displayWeekIndex = targetWeekIndex
+
     // Build game list display
-    let message = `# 📰 AI Game Recap - Week ${currentWeekIndex + 1}\n\n**Select a game below to generate an AI-powered recap:**\n\n`
+    let message = `# 📰 AI Game Recap - Week ${displayWeekIndex + 1}\n\n**Select a game below to generate an AI-powered recap:**\n\n`
 
     completedGames.forEach((game: any) => {
       const homeTeam = getTeamOrThrow(teams, game.homeTeamId)

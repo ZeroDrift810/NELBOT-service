@@ -1,20 +1,90 @@
-import { Command } from "../commands_handler"
-import { createMessageResponse, DiscordClient, deferMessage, formatTeamMessageName, SnallabotReactions, SnallabotDiscordError, formatSchedule, NoConnectedLeagueError } from "../discord_utils"
+import { ParameterizedContext } from "koa"
+import { CommandHandler, Command } from "../commands_handler"
+import { respond, createMessageResponse, DiscordClient, deferMessage, formatTeamMessageName, SnallabotReactions, SnallabotDiscordError, formatGame, formatSchedule } from "../discord_utils"
 import { APIApplicationCommandInteractionDataBooleanOption, APIApplicationCommandInteractionDataChannelOption, APIApplicationCommandInteractionDataIntegerOption, APIApplicationCommandInteractionDataRoleOption, APIApplicationCommandInteractionDataSubcommandOption, ApplicationCommandOptionType, ApplicationCommandType, ChannelType, RESTPostAPIApplicationCommandsJSONBody } from "discord-api-types/v10"
+import { Firestore } from "firebase-admin/firestore"
 import LeagueSettingsDB, { CategoryId, ChannelId, DiscordIdType, GameChannel, GameChannelConfiguration, GameChannelState, LeagueSettings, MaddenLeagueConfiguration, MessageId, RoleId, UserId, WeekState } from "../settings_db"
-import MaddenClient from "../../db/madden_db"
-import { formatRecord } from "../../export/madden_league_types"
+import MaddenClient, { TeamList } from "../../db/madden_db"
+import { formatRecord, getMessageForWeek, MADDEN_SEASON, MaddenGame } from "../../export/madden_league_types"
 import createLogger from "../logging"
+import { ConfirmedSim, ConfirmedSimV2, SimResult } from "../../db/events"
 import createNotifier from "../notifier"
 import { ExportContext, Stage, exporterForLeague, EAAccountError } from "../../dashboard/ea_client"
-import { leagueLogosView } from "../../db/view"
+import { LeagueLogos, leagueLogosView } from "../../db/view"
+
+// Webhook configuration for NEL Utility Bot companion messages
+const UTILITY_BOT_WEBHOOK_URL = process.env.UTILITY_BOT_WEBHOOK_URL || 'http://localhost:3002/api/game-channel-created'
+const UTILITY_BOT_WEBHOOK_SECRET = process.env.UTILITY_BOT_WEBHOOK_SECRET || 'your-secret-key-change-this'
+
+// Send webhook to NEL Utility Bot when game channel is created
+async function sendGameChannelWebhook(data: {
+  channel_id: string,
+  guild_id: string,
+  home_team: string,
+  away_team: string,
+  home_record: string,
+  away_record: string,
+  season: number,
+  week: number,
+  home_user_id?: string,
+  away_user_id?: string
+}) {
+  try {
+    const response = await fetch(UTILITY_BOT_WEBHOOK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${UTILITY_BOT_WEBHOOK_SECRET}`
+      },
+      body: JSON.stringify(data)
+    })
+    if (response.ok) {
+      console.log(`✅ Webhook sent for game channel ${data.away_team} @ ${data.home_team}`)
+    } else {
+      console.warn(`⚠️ Webhook failed for game channel: ${response.status}`)
+    }
+  } catch (error) {
+    console.warn(`⚠️ Could not send game channel webhook:`, error)
+    // Don't throw - webhook failure shouldn't break channel creation
+  }
+}
 
 async function react(client: DiscordClient, channel: ChannelId, message: MessageId, reaction: SnallabotReactions) {
   await client.reactToMessage(`${reaction}`, message, channel)
 }
 
-function notifierMessage(users: string, waitPing: number, role: RoleId): string {
-  return `${users}\nTime to schedule your game! Once your game is scheduled, hit the ⏰. Otherwise, You will be notified again every ${waitPing} hours.\nWhen you're done playing, let me know with 🏆 and I will clean up the channel.\nNeed to sim this game? React with ⏭ AND the home/away request a force win from <@&${role.id}>. Choose both home and away to fair sim! <@&${role.id}> hit the ⏭ to confirm it!`
+// ✅ Custom NEL game channel message with stream title suggestion
+function notifierMessage(users: string, homeTeamName: string, homeRecord: string, awayTeamName: string, awayRecord: string, season: number, week: number): string {
+    const suggestedStreamTitle = `NEL Y${season}W${week} ${homeTeamName} (${homeRecord}) @ ${awayTeamName} (${awayRecord})`
+
+    const messageBody = `### 🏈 Time to Schedule Your Game! 🏈
+
+**Scheduling & Results:**
+• Once your game time is set, please react to this message with ⏰.
+• When the game is finished, react with 🏆 to close this channel.
+
+---
+
+**🎮 Streaming (Optional):**
+Include **NEL** anywhere in your Twitch stream title for auto-announcements!
+> **Example:** \`${suggestedStreamTitle}\`
+
+Streams post to <#1415819410022731956>. See the **Streaming Guide** button in <#1446736003145400361> for setup help!
+
+---
+
+**Sim / Force Win Rules:**
+> 1. **Force Win:** React 🏠 (home wins) or ✈️ (away wins)
+> 2. **Fair Sim:** Both players react (one 🏠, one ✈️)
+> 3. **Confirm:** React ⏭️ — Admin must also react ⏭️ to approve
+
+---
+
+**League Reminders:**
+• **4th Down Rules**: <#1415819246373703791>
+• **Highlights**: <#1415819489626558524>`
+
+    return `${users}\n${messageBody}`
 }
 
 enum SnallabotCommandReactions {
@@ -24,7 +94,7 @@ enum SnallabotCommandReactions {
   ERROR = "<:snallabot_error:1288692698320076820>"
 }
 
-async function createGameChannels(client: DiscordClient, token: string, guild_id: string, settings: LeagueSettings, week: number, category: CategoryId, author: UserId) {
+async function createGameChannels(client: DiscordClient, db: Firestore, token: string, guild_id: string, settings: LeagueSettings, week: number, category: CategoryId, author: UserId) {
   let channelsToCleanup: ChannelId[] = []
   try {
     const leagueId = (settings.commands.madden_league as Required<MaddenLeagueConfiguration>).league_id
@@ -111,19 +181,23 @@ async function createGameChannels(client: DiscordClient, token: string, guild_id
     if (!settings.commands.game_channel) {
       return
     }
-    const waitPing = settings.commands.game_channel.wait_ping || 12
-    const role = settings.commands.game_channel.admin
     const gameChannelsWithMessage = await Promise.all(gameChannels.map(async gameChannel => {
       const channel = gameChannel.channel
       const game = gameChannel.game
-      const awayTeamId = teams.getTeamForId(game.awayTeamId).teamId
-      const homeTeamId = teams.getTeamForId(game.homeTeamId).teamId
-      const awayUser = formatTeamMessageName(assignments?.[awayTeamId]?.discord_user?.id, teams.getTeamForId(game.awayTeamId)?.userName)
-      const homeUser = formatTeamMessageName(assignments?.[homeTeamId]?.discord_user?.id, teams.getTeamForId(game.homeTeamId)?.userName)
+      const awayTeam = teams.getTeamForId(game.awayTeamId)
+      const homeTeam = teams.getTeamForId(game.homeTeamId)
+      const awayTeamId = awayTeam.teamId
+      const homeTeamId = homeTeam.teamId
+      const awayUser = formatTeamMessageName(assignments?.[awayTeamId]?.discord_user?.id, awayTeam?.userName)
+      const homeUser = formatTeamMessageName(assignments?.[homeTeamId]?.discord_user?.id, homeTeam?.userName)
       const awayTeamStanding = await MaddenClient.getStandingForTeam(leagueId, awayTeamId)
       const homeTeamStanding = await MaddenClient.getStandingForTeam(leagueId, homeTeamId)
-      const usersMessage = `${awayUser} (${formatRecord(awayTeamStanding)}) at ${homeUser} (${formatRecord(homeTeamStanding)})`
-      const message = await client.createMessage(channel, notifierMessage(usersMessage, waitPing, role), ["users"])
+      const homeRecord = formatRecord(homeTeamStanding)
+      const awayRecord = formatRecord(awayTeamStanding)
+      const usersMessage = `${awayUser} (${awayRecord}) at ${homeUser} (${homeRecord})`
+      const season = game.seasonIndex + 1
+      const gameWeek = game.weekIndex + 1
+      const message = await client.createMessage(channel, notifierMessage(usersMessage, homeTeam.displayName, homeRecord, awayTeam.displayName, awayRecord, season, gameWeek), ["users"])
       return { message: message, ...gameChannel }
     }))
     await client.editOriginalInteraction(token, {
@@ -136,13 +210,32 @@ async function createGameChannels(client: DiscordClient, token: string, guild_id
 - ${SnallabotCommandReactions.WAITING} Logging`
     })
     const finalGameChannels: GameChannel[] = await Promise.all(gameChannelsWithMessage.map(async gameChannel => {
-      const { channel: channel, message: message } = gameChannel
+      const { channel: channel, message: message, game } = gameChannel
       await react(client, channel, message, SnallabotReactions.SCHEDULE)
       await react(client, channel, message, SnallabotReactions.GG)
       await react(client, channel, message, SnallabotReactions.HOME)
       await react(client, channel, message, SnallabotReactions.AWAY)
       await react(client, channel, message, SnallabotReactions.SIM)
-      const { game, ...rest } = gameChannel
+
+      // Send webhook to NEL Utility Bot for companion message with buttons
+      const awayTeam = teams.getTeamForId(game.awayTeamId)
+      const homeTeam = teams.getTeamForId(game.homeTeamId)
+      const awayTeamStanding = await MaddenClient.getStandingForTeam(leagueId, game.awayTeamId)
+      const homeTeamStanding = await MaddenClient.getStandingForTeam(leagueId, game.homeTeamId)
+      sendGameChannelWebhook({
+        channel_id: channel.id,
+        guild_id: guild_id,
+        home_team: homeTeam.displayName,
+        away_team: awayTeam.displayName,
+        home_record: formatRecord(homeTeamStanding),
+        away_record: formatRecord(awayTeamStanding),
+        season: game.seasonIndex + 1,
+        week: game.weekIndex + 1,
+        home_user_id: assignments?.[homeTeam.teamId]?.discord_user?.id,
+        away_user_id: assignments?.[awayTeam.teamId]?.discord_user?.id
+      })
+
+      const { game: _game, ...rest } = gameChannel
       const createdTime = new Date().getTime()
       return { ...rest, state: GameChannelState.CREATED, notifiedTime: createdTime, channel: channel, message: message }
     }))
@@ -203,7 +296,7 @@ ${errorMessage}
   }
 }
 
-async function clearGameChannels(client: DiscordClient, token: string, guild_id: string, settings: LeagueSettings, author: UserId, weekToClear?: number) {
+async function clearGameChannels(client: DiscordClient, db: Firestore, token: string, guild_id: string, settings: LeagueSettings, author: UserId, weekToClear?: number) {
   try {
     await client.editOriginalInteraction(token, { content: `Clearing Game Channels...` })
     const weekStates = settings.commands.game_channel?.weekly_states || {}
@@ -257,7 +350,7 @@ async function notifyGameChannels(client: DiscordClient, token: string, guild_id
       const weekState = entry[1]
       const season = weekState.seasonIndex
       const week = weekState.week
-      return await Promise.all(Object.values(weekState?.channel_states || {}).map(async channel => {
+      return await Promise.all(Object.values(weekState.channel_states).map(async channel => {
         await notifier.ping(channel, season, week)
       }))
     }))
@@ -268,7 +361,7 @@ async function notifyGameChannels(client: DiscordClient, token: string, guild_id
 }
 
 export default {
-  async handleCommand(command: Command, client: DiscordClient) {
+  async handleCommand(command: Command, client: DiscordClient, db: Firestore, ctx: ParameterizedContext) {
     const { guild_id, token, member } = command
     const author: UserId = { id: member.user.id, id_type: DiscordIdType.USER }
     if (!command.data.options) {
@@ -296,13 +389,13 @@ export default {
         private_channels: !!usePrivateChannels
       }
       await LeagueSettingsDB.configureGameChannel(guild_id, conf)
-      return createMessageResponse(`game channels commands are configured! Configuration:
+      respond(ctx, createMessageResponse(`game channels commands are configured! Configuration:
 
 - Admin Role: <@&${adminRole}>
 - Game Channel Category: <#${gameChannelCategory}>
 - Scoreboard Channel: <#${scoreboardChannel}>
 - Notification Period: Every ${waitPing} hour(s)
-- Private Channels: ${!!usePrivateChannels ? "Yes" : "No"}`)
+- Private Channels: ${!!usePrivateChannels ? "Yes" : "No"}`))
     } else if (subCommand === "create" || subCommand === "wildcard" || subCommand === "divisional" || subCommand === "conference" || subCommand === "superbowl") {
       const week = (() => {
         if (subCommand === "create") {
@@ -342,20 +435,20 @@ export default {
         throw new Error("Game channels are not configured! run /game_channels configure first")
       }
       if (!leagueSettings.commands?.madden_league?.league_id) {
-        throw new NoConnectedLeagueError(guild_id)
+        throw new Error("No madden league linked. Setup snallabot with your Madden league first")
       }
       const category = categoryOverride ? categoryOverride : leagueSettings.commands.game_channel.default_category.id
-      createGameChannels(client, token, guild_id, leagueSettings, week, { id: category, id_type: DiscordIdType.CATEGORY }, author)
-      return deferMessage()
+      respond(ctx, deferMessage())
+      createGameChannels(client, db, token, guild_id, leagueSettings, week, { id: category, id_type: DiscordIdType.CATEGORY }, author)
     } else if (subCommand === "clear") {
       const gameChannelsCommand = options[0] as APIApplicationCommandInteractionDataSubcommandOption
       const gameChannelWeekToClear = (gameChannelsCommand?.options?.[0] as APIApplicationCommandInteractionDataIntegerOption)?.value
       const weekToClear = gameChannelWeekToClear ? Number(gameChannelWeekToClear) : undefined
-      clearGameChannels(client, token, guild_id, leagueSettings, author, weekToClear)
-      return deferMessage()
+      respond(ctx, deferMessage())
+      clearGameChannels(client, db, token, guild_id, leagueSettings, author, weekToClear)
     } else if (subCommand === "notify") {
+      respond(ctx, deferMessage())
       notifyGameChannels(client, token, guild_id, leagueSettings)
-      return deferMessage()
     } else {
       throw new Error(`game_channels ${subCommand} not implemented`)
     }
@@ -504,4 +597,4 @@ export default {
       ]
     }
   }
-}
+} as CommandHandler

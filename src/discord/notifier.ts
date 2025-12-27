@@ -112,8 +112,22 @@ function createNotifier(client: DiscordClient, guildId: string, settings: League
       const awayTag = formatTeamMessageName(assignments[`${awayTeam.teamId}`]?.discord_user?.id, awayTeam.userName)
       const homeTag = formatTeamMessageName(assignments[`${homeTeam.teamId}`]?.discord_user?.id, homeTeam.userName)
       await LeagueSettingsDB.updateGameChannelPingTime(guildId, week, season, gameChannel.channel)
+      
+      // ✅ This section has been updated with your new message.
+      const messageBody = `### ⏰ **Advance Schedule**
+
+• The league advances every **48 hours** between **9:00 PM - 10:00 PM EST**.
+• Your game must be in-progress before **9:59 PM EST** on advance night to avoid being simmed.
+• To request a delay, you must organize a league vote and get at least **17 'yes' votes**.
+
+### 📜 **League Rules & Etiquette**
+
+• Please show fair availability and good sportsmanship.
+• Work out any disputes directly with your opponent. If a commissioner has to rule, that ruling is final.
+• Keep the competition fun! All beef belongs on the field, in highlight reels, or in hilarious WWE-style rants.`;
+      
       try {
-        await client.createMessage(gameChannel.channel, `${awayTag} ${homeTag} is your game scheduled? Schedule it! or react to my first message to set it as scheduled! Hit the trophy if its done already`, ["users"])
+        await client.createMessage(gameChannel.channel, `${awayTag} ${homeTag}\n\n${messageBody}`, ["users"])
       } catch (e) {
       }
     },

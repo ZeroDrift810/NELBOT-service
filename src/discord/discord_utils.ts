@@ -682,60 +682,68 @@ export function createProdClient() {
 
 export enum SnallabotTeamEmojis {
   // AFC East
-  NE = "<:snallabot_ne:1450281665648660625>",
-  NYJ = "<:snallabot_nyj:1450281682593644584>",
-  BUF = "<:snallabot_buf:1450281572761862175>",
-  MIA = "<:snallabot_mia:1450281655926521958>",
+  NE = "<:nel_ne:1454300821285113878>",
+  NYJ = "<:nel_nyj:1454300851966574734>",
+  BUF = "<:nel_buf:1454300707401240762>",
+  MIA = "<:nel_mia:1454300809843183806>",
 
   // AFC North
-  CIN = "<:snallabot_cin:1450281588267941949>",
-  PIT = "<:snallabot_pit:1450281693075476663>",
-  BAL = "<:snallabot_bal:1450281568084951070>",
-  CLE = "<:snallabot_cle:1450281593565352160>",
+  CIN = "<:nel_cin:1454300732231647348>",
+  PIT = "<:nel_pit:1454300863290937484>",
+  BAL = "<:nel_bal:1454300701709832214>",
+  CLE = "<:nel_cle:1454300738581823521>",
 
   // AFC South
-  TEN = "<:snallabot_ten:1450281714504044757>",
-  IND = "<:snallabot_ind:1450281623911272458>",
-  JAX = "<:snallabot_jax:1450281628923465800>",
-  HOU = "<:snallabot_hou:1450281619033165955>",
+  TEN = "<:nel_ten:1454300886695153829>",
+  IND = "<:nel_ind:1454300773805461585>",
+  JAX = "<:nel_jax:1454300780084465727>",
+  HOU = "<:nel_hou:1454300767593955482>",
 
   // AFC West
-  KC = "<:snallabot_kc:1450281633533136969>",
-  LV = "<:snallabot_lv:1450281650985635860>",
-  DEN = "<:snallabot_den:1450281603590000764>",
-  LAC = "<:snallabot_lac:1450281638922682543>",
+  KC = "<:nel_kc:1454300786191237235>",
+  LV = "<:nel_lv:1454300803907981405>",
+  DEN = "<:nel_den:1454300749595938931>",
+  LAC = "<:nel_lac:1454300792293953536>",
 
   // NFC East
-  DAL = "<:snallabot_dal:1450281598510563378>",
-  NYG = "<:snallabot_nyg:1450281675367125064>",
-  PHI = "<:snallabot_phi:1450281687593521274>",
-  WAS = "<:snallabot_was:1450281719671427297>",
+  DAL = "<:nel_dal:1454300744374292591>",
+  NYG = "<:nel_nyg:1454300845134057493>",
+  PHI = "<:nel_phi:1454300857582747711>",
+  WAS = "<:nel_was:1454300892173176885>",
 
   // NFC North
-  MIN = "<:snallabot_min:1450281660674216030>",
-  CHI = "<:snallabot_chi:1450281583163740334>",
-  DET = "<:snallabot_det:1450281608816103548>",
-  GB = "<:snallabot_gb:1450281613979029645>",
+  MIN = "<:nel_min:1454300815652163718>",
+  CHI = "<:nel_chi:1454300719120388241>",
+  DET = "<:nel_det:1454300755665223741>",
+  GB = "<:nel_gb:1454300761243652167>",
 
   // NFC South
-  NO = "<:snallabot_no:1450281670728089684>",
-  CAR = "<:snallabot_car:1450281577488715898>",
-  TB = "<:snallabot_tb:1450281709068226590>",
-  ATL = "<:snallabot_atl:1450281563047727306>",
+  NO = "<:nel_no:1454300839173951490>",
+  CAR = "<:nel_car:1454300713499758644>",
+  TB = "<:nel_tb:1454300880689168566>",
+  ATL = "<:nel_atl:1454300696034803795>",
 
   // NFC West
-  ARI = "<:snallabot_ari:1450281557804974080>",
-  LAR = "<:snallabot_lar:1450281645923106906>",
-  SEA = "<:snallabot_sea:1450281698943041667>",
-  SF = "<:snallabot_sf:1450281703649185866>",
+  ARI = "<:nel_ari:1454300690271703164>",
+  LAR = "<:nel_lar:1454300798048665733>",
+  SEA = "<:nel_sea:1454300868802252912>",
+  SF = "<:nel_sf:1454300874422747198>",
+
   // Default, NFL logo
-  NFL = "<:snallabot_nfl:1364108784229810257>"
+  NFL = "<:nel_nfl:1454300833700118538>"
 }
 
 export function getTeamEmoji(teamAbbr: string, leagueCustomLogos: LeagueLogos): string {
   const customLogo = leagueCustomLogos[teamAbbr]
-  if (customLogo) {
-    return `<:${customLogo.emoji_name}:${customLogo.emoji_id}>`
+  // Validate custom logo has proper emoji format:
+  // - emoji_id must be a Discord snowflake (17-20 digit number)
+  // - emoji_name must be a valid Discord emoji name (letters, numbers, underscores, not just digits)
+  if (customLogo && customLogo.emoji_name && customLogo.emoji_id) {
+    const validId = /^\d{17,20}$/.test(customLogo.emoji_id)
+    const validName = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(customLogo.emoji_name)
+    if (validId && validName) {
+      return `<:${customLogo.emoji_name}:${customLogo.emoji_id}>`
+    }
   }
   return SnallabotTeamEmojis[teamAbbr.toUpperCase() as keyof typeof SnallabotTeamEmojis] || SnallabotTeamEmojis.NFL
 }
