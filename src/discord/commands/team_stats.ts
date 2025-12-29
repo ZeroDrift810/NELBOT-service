@@ -22,7 +22,15 @@ type AggregatedTeamStats = {
   off1stDowns: number
   offPtsPerGame: number
   off3rdDownConvPct: number
+  off3rdDownConv: number
+  off3rdDownAtt: number
+  off4thDownConvPct: number
+  off4thDownConv: number
+  off4thDownAtt: number
   offRedZonePct: number
+  offRedZoneTDs: number
+  offRedZones: number
+  offRedZoneFGs: number
   // Defensive stats
   defTotalYds: number
   defPassYds: number
@@ -32,6 +40,11 @@ type AggregatedTeamStats = {
   defIntsRec: number
   defFumRec: number
   defForcedFum: number
+  defRedZonePct: number
+  defRedZoneTDs: number
+  defRedZones: number
+  // Penalties
+  penalties: number
   // Turnover differential
   tODiff: number
   tOTakeaways: number
@@ -98,7 +111,15 @@ async function getSeasonTeamStats(leagueId: string): Promise<AggregatedTeamStats
         off1stDowns: stats.off1stDowns || 0,
         offPtsPerGame: stats.offPtsPerGame || 0,
         off3rdDownConvPct: stats.off3rdDownConvPct || 0,
+        off3rdDownConv: stats.off3rdDownConv || 0,
+        off3rdDownAtt: stats.off3rdDownAtt || 0,
+        off4thDownConvPct: stats.off4thDownConvPct || 0,
+        off4thDownConv: stats.off4thDownConv || 0,
+        off4thDownAtt: stats.off4thDownAtt || 0,
         offRedZonePct: stats.offRedZonePct || 0,
+        offRedZoneTDs: stats.offRedZoneTDs || 0,
+        offRedZones: stats.offRedZones || 0,
+        offRedZoneFGs: stats.offRedZoneFGs || 0,
         // Defensive
         defTotalYds: stats.defTotalYds || 0,
         defPassYds: stats.defPassYds || 0,
@@ -108,6 +129,11 @@ async function getSeasonTeamStats(leagueId: string): Promise<AggregatedTeamStats
         defIntsRec: stats.defIntsRec || 0,
         defFumRec: stats.defFumRec || 0,
         defForcedFum: stats.defForcedFum || 0,
+        defRedZonePct: stats.defRedZonePct || 0,
+        defRedZoneTDs: stats.defRedZoneTDs || 0,
+        defRedZones: stats.defRedZones || 0,
+        // Penalties
+        penalties: stats.penalties || 0,
         // Turnovers
         tODiff: stats.tODiff || 0,
         tOTakeaways: stats.tOTakeaways || 0,
@@ -344,6 +370,94 @@ async function showOverallRankings(token: string, client: DiscordClient, league:
   }
 }
 
+async function showSituationalStats(token: string, client: DiscordClient, league: string) {
+  try {
+    const [stats, logos] = await Promise.all([
+      getSeasonTeamStats(league),
+      leagueLogosView.createView(league)
+    ])
+
+    if (stats.length === 0) {
+      await client.editOriginalInteraction(token, {
+        flags: 32768,
+        components: [{
+          type: ComponentType.TextDisplay,
+          content: "# Situational Stats\n\nNo team stats found. Stats are recorded after games are played."
+        }]
+      })
+      return
+    }
+
+    // Sort by various situational stats
+    const by3rdDown = [...stats].sort((a, b) => b.off3rdDownConvPct - a.off3rdDownConvPct)
+    const by4thDown = [...stats].filter(t => t.off4thDownAtt > 0).sort((a, b) => b.off4thDownConvPct - a.off4thDownConvPct)
+    const byRedZone = [...stats].filter(t => t.offRedZones > 0).sort((a, b) => b.offRedZonePct - a.offRedZonePct)
+    const byPenalties = [...stats].sort((a, b) => a.penalties - b.penalties) // ascending = better (fewer penalties)
+    const byDefRedZone = [...stats].filter(t => t.defRedZones > 0).sort((a, b) => a.defRedZonePct - b.defRedZonePct) // ascending = better defense
+
+    let message = `# 📋 Situational Stats\n**${MADDEN_SEASON} Season**\n\n`
+
+    // 3rd Down Conversion
+    message += `## 🔄 3rd Down Conversion %\n`
+    by3rdDown.slice(0, 8).forEach((team, i) => {
+      const emoji = formatTeamEmoji(logos, team.teamAbbr)
+      message += `${formatRank(i + 1)} ${emoji} ${team.teamAbbr} — **${team.off3rdDownConvPct.toFixed(1)}%** (${team.off3rdDownConv}/${team.off3rdDownAtt})\n`
+    })
+
+    // 4th Down Conversion
+    if (by4thDown.length > 0) {
+      message += `\n## 🎲 4th Down Conversion %\n`
+      by4thDown.slice(0, 5).forEach((team, i) => {
+        const emoji = formatTeamEmoji(logos, team.teamAbbr)
+        message += `${formatRank(i + 1)} ${emoji} ${team.teamAbbr} — **${team.off4thDownConvPct.toFixed(1)}%** (${team.off4thDownConv}/${team.off4thDownAtt})\n`
+      })
+    }
+
+    // Red Zone Offense
+    if (byRedZone.length > 0) {
+      message += `\n## 🔴 Red Zone Efficiency\n`
+      byRedZone.slice(0, 8).forEach((team, i) => {
+        const emoji = formatTeamEmoji(logos, team.teamAbbr)
+        message += `${formatRank(i + 1)} ${emoji} ${team.teamAbbr} — **${team.offRedZonePct.toFixed(1)}%** (${team.offRedZoneTDs} TD, ${team.offRedZoneFGs} FG / ${team.offRedZones} trips)\n`
+      })
+    }
+
+    // Red Zone Defense
+    if (byDefRedZone.length > 0) {
+      message += `\n## 🛡️ Red Zone Defense\n`
+      byDefRedZone.slice(0, 5).forEach((team, i) => {
+        const emoji = formatTeamEmoji(logos, team.teamAbbr)
+        message += `${formatRank(i + 1)} ${emoji} ${team.teamAbbr} — **${team.defRedZonePct.toFixed(1)}%** allowed (${team.defRedZoneTDs} TD / ${team.defRedZones} trips)\n`
+      })
+    }
+
+    // Fewest Penalties
+    message += `\n## ⚠️ Fewest Penalties\n`
+    byPenalties.slice(0, 5).forEach((team, i) => {
+      const emoji = formatTeamEmoji(logos, team.teamAbbr)
+      const perGame = team.gamesPlayed > 0 ? (team.penalties / team.gamesPlayed).toFixed(1) : '0.0'
+      message += `${formatRank(i + 1)} ${emoji} ${team.teamAbbr} — **${team.penalties}** penalties (${perGame}/g)\n`
+    })
+
+    await client.editOriginalInteraction(token, {
+      flags: 32768,
+      components: [{
+        type: ComponentType.TextDisplay,
+        content: message
+      }]
+    })
+  } catch (e) {
+    console.error("Error in showSituationalStats:", e)
+    await client.editOriginalInteraction(token, {
+      flags: 32768,
+      components: [{
+        type: ComponentType.TextDisplay,
+        content: `Failed to show situational stats: ${e}`
+      }]
+    })
+  }
+}
+
 async function showTurnoverStats(token: string, client: DiscordClient, league: string) {
   try {
     const [stats, logos] = await Promise.all([
@@ -422,6 +536,8 @@ export default {
       showOverallRankings(command.token, client, league)
     } else if (subCommand.name === "turnovers") {
       showTurnoverStats(command.token, client, league)
+    } else if (subCommand.name === "situational") {
+      showSituationalStats(command.token, client, league)
     }
   },
   commandDefinition(): RESTPostAPIApplicationCommandsJSONBody {
@@ -448,6 +564,11 @@ export default {
           type: ApplicationCommandOptionType.Subcommand,
           name: "turnovers",
           description: "View turnover differential rankings"
+        },
+        {
+          type: ApplicationCommandOptionType.Subcommand,
+          name: "situational",
+          description: "View 3rd/4th down, red zone, and penalty stats"
         }
       ],
       type: ApplicationCommandType.ChatInput,

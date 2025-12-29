@@ -7,7 +7,8 @@ import MaddenDB from "../../db/madden_db"
 import LeagueSettingsDB from "../settings_db"
 import { leagueLogosView, discordLeagueView } from "../../db/view"
 import { generateGameRecap, GameRecapData, isAnthropicConfigured } from "../../ai/anthropic_client"
-import { GameResult, MADDEN_SEASON } from "../../export/madden_league_types"
+import { GameResult, MADDEN_SEASON, PassingStats, RushingStats, ReceivingStats, DefensiveStats } from "../../export/madden_league_types"
+import { PlayerStatType } from "../../db/madden_db"
 
 type Analyst = 'Tom Brady' | 'Greg Olsen' | 'Stephen A. Smith' | 'Tony Romo' | 'Al Michaels'
 
@@ -264,51 +265,132 @@ async function generateRecap(token: string, client: DiscordClient, league: strin
     const homeTeamStats = gameStats.teamStats.find(ts => ts.teamId === game.homeTeamId)
     const awayTeamStats = gameStats.teamStats.find(ts => ts.teamId === game.awayTeamId)
 
-    const topPerformers: { name: string; team: string; stat: string }[] = []
+    // Get player stats
+    const passingStats = (gameStats.playerStats[PlayerStatType.PASSING] || []) as PassingStats[]
+    const rushingStats = (gameStats.playerStats[PlayerStatType.RUSHING] || []) as RushingStats[]
+    const receivingStats = (gameStats.playerStats[PlayerStatType.RECEIVING] || []) as ReceivingStats[]
+    const defensiveStats = (gameStats.playerStats[PlayerStatType.DEFENSE] || []) as DefensiveStats[]
 
-    // Get passing leaders from game stats
-    if (homeTeamStats?.offPassYds || awayTeamStats?.offPassYds) {
-      const homePassYds = homeTeamStats?.offPassYds || 0
-      const awayPassYds = awayTeamStats?.offPassYds || 0
+    const topPerformers: { name: string; team: string; stat: string; category: 'passing' | 'rushing' | 'receiving' | 'defense' }[] = []
+    const explosivePlays: { player: string; team: string; description: string }[] = []
+    const keyDefensivePlays: { player: string; team: string; stat: string }[] = []
 
-      if (homePassYds > 200) {
-        topPerformers.push({
-          name: "QB",
-          team: homeTeamInfo.abbrName,
-          stat: `${homePassYds} pass yds`
+    // Get passing leaders (actual player names)
+    const topPassers = passingStats
+      .filter(p => p.passYds > 150)
+      .sort((a, b) => b.passYds - a.passYds)
+      .slice(0, 2)
+
+    topPassers.forEach(passer => {
+      const team = teams.getTeamForId(passer.teamId)
+      const rating = passer.passerRating?.toFixed(1) || '0.0'
+      topPerformers.push({
+        name: passer.fullName,
+        team: team?.abbrName || 'FA',
+        stat: `${passer.passYds} yds, ${passer.passTDs} TD, ${passer.passInts} INT, ${rating} RTG`,
+        category: 'passing'
+      })
+    })
+
+    // Get rushing leaders (actual player names)
+    const topRushers = rushingStats
+      .filter(p => p.rushYds > 30)
+      .sort((a, b) => b.rushYds - a.rushYds)
+      .slice(0, 3)
+
+    topRushers.forEach(rusher => {
+      const team = teams.getTeamForId(rusher.teamId)
+      const ypc = rusher.rushAtt > 0 ? (rusher.rushYds / rusher.rushAtt).toFixed(1) : '0.0'
+      topPerformers.push({
+        name: rusher.fullName,
+        team: team?.abbrName || 'FA',
+        stat: `${rusher.rushYds} rush yds, ${rusher.rushTDs} TD, ${ypc} YPC`,
+        category: 'rushing'
+      })
+
+      // Track explosive runs (20+ yards)
+      if ((rusher.rush20PlusYds || 0) > 0) {
+        explosivePlays.push({
+          player: rusher.fullName,
+          team: team?.abbrName || 'FA',
+          description: `${rusher.rush20PlusYds} runs of 20+ yds (long: ${rusher.rushLongest})`
         })
       }
-      if (awayPassYds > 200) {
-        topPerformers.push({
-          name: "QB",
-          team: awayTeamInfo.abbrName,
-          stat: `${awayPassYds} pass yds`
+    })
+
+    // Get receiving leaders (actual player names)
+    const topReceivers = receivingStats
+      .filter(p => p.recYds > 30)
+      .sort((a, b) => b.recYds - a.recYds)
+      .slice(0, 3)
+
+    topReceivers.forEach(receiver => {
+      const team = teams.getTeamForId(receiver.teamId)
+      const yac = receiver.recYdsAfterCatch || 0
+      topPerformers.push({
+        name: receiver.fullName,
+        team: team?.abbrName || 'FA',
+        stat: `${receiver.recCatches} rec, ${receiver.recYds} yds, ${receiver.recTDs} TD, ${yac} YAC`,
+        category: 'receiving'
+      })
+
+      // Track explosive catches
+      if ((receiver.recLongest || 0) >= 25) {
+        explosivePlays.push({
+          player: receiver.fullName,
+          team: team?.abbrName || 'FA',
+          description: `${receiver.recLongest} yd reception`
         })
       }
-    }
+    })
 
-    // Get rushing leaders
-    if (homeTeamStats?.offRushYds || awayTeamStats?.offRushYds) {
-      const homeRushYds = homeTeamStats?.offRushYds || 0
-      const awayRushYds = awayTeamStats?.offRushYds || 0
+    // Get defensive standouts
+    const topDefenders = defensiveStats
+      .filter(p => p.defTotalTackles > 3 || p.defSacks > 0 || p.defInts > 0 || p.defForcedFum > 0)
+      .sort((a, b) => {
+        // Prioritize by big plays (sacks, ints, FF) then tackles
+        const aScore = (a.defSacks * 3) + (a.defInts * 4) + (a.defForcedFum * 3) + a.defTotalTackles
+        const bScore = (b.defSacks * 3) + (b.defInts * 4) + (b.defForcedFum * 3) + b.defTotalTackles
+        return bScore - aScore
+      })
+      .slice(0, 3)
 
-      if (homeRushYds > 100) {
-        topPerformers.push({
-          name: "RB",
-          team: homeTeamInfo.abbrName,
-          stat: `${homeRushYds} rush yds`
+    topDefenders.forEach(defender => {
+      const team = teams.getTeamForId(defender.teamId)
+      const statParts = []
+      if (defender.defTotalTackles > 0) statParts.push(`${defender.defTotalTackles} TKL`)
+      if (defender.defSacks > 0) statParts.push(`${defender.defSacks} SCK`)
+      if (defender.defInts > 0) statParts.push(`${defender.defInts} INT`)
+      if (defender.defForcedFum > 0) statParts.push(`${defender.defForcedFum} FF`)
+      if (defender.defDeflections > 0) statParts.push(`${defender.defDeflections} PD`)
+
+      topPerformers.push({
+        name: defender.fullName,
+        team: team?.abbrName || 'FA',
+        stat: statParts.join(', '),
+        category: 'defense'
+      })
+
+      // Key defensive plays
+      if (defender.defSacks > 0 || defender.defInts > 0 || defender.defForcedFum > 0) {
+        const plays = []
+        if (defender.defSacks > 0) plays.push(`${defender.defSacks} sack${defender.defSacks > 1 ? 's' : ''}`)
+        if (defender.defInts > 0) {
+          const retYds = defender.defIntReturnYds || 0
+          plays.push(`${defender.defInts} INT${retYds > 0 ? ` (${retYds} ret yds)` : ''}`)
+        }
+        if (defender.defForcedFum > 0) plays.push(`${defender.defForcedFum} forced fumble${defender.defForcedFum > 1 ? 's' : ''}`)
+        if (defender.defTDs > 0) plays.push(`${defender.defTDs} DEF TD`)
+
+        keyDefensivePlays.push({
+          player: defender.fullName,
+          team: team?.abbrName || 'FA',
+          stat: plays.join(', ')
         })
       }
-      if (awayRushYds > 100) {
-        topPerformers.push({
-          name: "RB",
-          team: awayTeamInfo.abbrName,
-          stat: `${awayRushYds} rush yds`
-        })
-      }
-    }
+    })
 
-    // Build GameRecapData
+    // Build GameRecapData with enhanced stats
     const recapData: GameRecapData = {
       weekIndex,
       seasonIndex,
@@ -326,7 +408,14 @@ async function generateRecap(token: string, client: DiscordClient, league: strin
         penalties: homeTeamStats?.penalties || 0,
         penaltyYards: homeTeamStats?.penaltyYds || 0,
         thirdDownConv: homeTeamStats?.off3rdDownConv || 0,
-        thirdDownAtt: homeTeamStats?.off3rdDownAtt || 0
+        thirdDownAtt: homeTeamStats?.off3rdDownAtt || 0,
+        sacks: homeTeamStats?.defSacks || 0,
+        interceptions: homeTeamStats?.defIntsRec || 0,
+        fumbles: homeTeamStats?.defFumRec || 0,
+        redZoneAtt: homeTeamStats?.offRedZones || 0,
+        redZoneTD: homeTeamStats?.offRedZoneTDs || 0,
+        fourthDownConv: homeTeamStats?.off4thDownConv || 0,
+        fourthDownAtt: homeTeamStats?.off4thDownAtt || 0
       },
       awayStats: {
         passYards: awayTeamStats?.offPassYds || 0,
@@ -336,26 +425,57 @@ async function generateRecap(token: string, client: DiscordClient, league: strin
         penalties: awayTeamStats?.penalties || 0,
         penaltyYards: awayTeamStats?.penaltyYds || 0,
         thirdDownConv: awayTeamStats?.off3rdDownConv || 0,
-        thirdDownAtt: awayTeamStats?.off3rdDownAtt || 0
+        thirdDownAtt: awayTeamStats?.off3rdDownAtt || 0,
+        sacks: awayTeamStats?.defSacks || 0,
+        interceptions: awayTeamStats?.defIntsRec || 0,
+        fumbles: awayTeamStats?.defFumRec || 0,
+        redZoneAtt: awayTeamStats?.offRedZones || 0,
+        redZoneTD: awayTeamStats?.offRedZoneTDs || 0,
+        fourthDownConv: awayTeamStats?.off4thDownConv || 0,
+        fourthDownAtt: awayTeamStats?.off4thDownAtt || 0
       },
-      topPerformers
+      topPerformers,
+      explosivePlays,
+      keyDefensivePlays
     }
 
-    console.log(`📰 Generating AI recap with ${analyst}`)
+    console.log(`📰 Generating AI recap with ${analyst} - ${topPerformers.length} performers, ${explosivePlays.length} explosive plays`)
 
     const recap = await generateGameRecap(recapData, analyst as Analyst)
 
     const homeEmoji = formatTeamEmoji(logos, homeTeamInfo.abbrName)
     const awayEmoji = formatTeamEmoji(logos, awayTeamInfo.abbrName)
 
+    // Build enhanced box score
     let message = `# 📰 Game Recap - Week ${weekIndex + 1}\n\n`
     message += `## ${awayEmoji} ${awayTeamInfo.displayName} ${game.awayScore}, ${homeEmoji} ${homeTeamInfo.displayName} ${game.homeScore}\n\n`
     message += `**${analyst}'s Analysis:**\n\n`
     message += `${recap}\n\n`
     message += `---\n\n`
-    message += `**Final Stats:**\n`
-    message += `${awayTeamInfo.abbrName}: ${recapData.awayStats.totalYards} yds, ${recapData.awayStats.turnovers} TO\n`
-    message += `${homeTeamInfo.abbrName}: ${recapData.homeStats.totalYards} yds, ${recapData.homeStats.turnovers} TO\n\n`
+
+    // Enhanced box score
+    message += `**📊 Box Score:**\n`
+    message += `\`\`\`\n`
+    message += `           ${awayTeamInfo.abbrName.padEnd(6)} ${homeTeamInfo.abbrName}\n`
+    message += `Total     ${String(recapData.awayStats.totalYards).padStart(4)}    ${String(recapData.homeStats.totalYards).padStart(4)}\n`
+    message += `Pass      ${String(recapData.awayStats.passYards).padStart(4)}    ${String(recapData.homeStats.passYards).padStart(4)}\n`
+    message += `Rush      ${String(recapData.awayStats.rushYards).padStart(4)}    ${String(recapData.homeStats.rushYards).padStart(4)}\n`
+    message += `TO        ${String(recapData.awayStats.turnovers).padStart(4)}    ${String(recapData.homeStats.turnovers).padStart(4)}\n`
+    message += `3rd Dn  ${recapData.awayStats.thirdDownConv}/${recapData.awayStats.thirdDownAtt}    ${recapData.homeStats.thirdDownConv}/${recapData.homeStats.thirdDownAtt}\n`
+    if (recapData.awayStats.redZoneAtt > 0 || recapData.homeStats.redZoneAtt > 0) {
+      message += `Red Zn  ${recapData.awayStats.redZoneTD}/${recapData.awayStats.redZoneAtt}    ${recapData.homeStats.redZoneTD}/${recapData.homeStats.redZoneAtt}\n`
+    }
+    message += `\`\`\`\n\n`
+
+    // Top performers summary
+    if (topPerformers.length > 0) {
+      message += `**⭐ Top Performers:**\n`
+      topPerformers.slice(0, 5).forEach(p => {
+        message += `• **${p.name}** (${p.team}): ${p.stat}\n`
+      })
+      message += `\n`
+    }
+
     message += `*🤖 Powered by Claude AI*`
 
     await client.editOriginalInteraction(token, {
@@ -398,7 +518,8 @@ export default {
     const weekOption = (options.find(o => o.name === "week") as APIApplicationCommandInteractionDataIntegerOption)?.value
 
     respond(ctx, deferMessage())
-    showWeekGames(command.token, client, league, weekOption !== undefined ? Number(weekOption) : undefined)
+    // Convert 1-based week number from user to 0-based weekIndex
+    showWeekGames(command.token, client, league, weekOption !== undefined ? Number(weekOption) - 1 : undefined)
   },
   commandDefinition(): RESTPostAPIApplicationCommandsJSONBody {
     return {
@@ -410,8 +531,8 @@ export default {
           name: "week",
           description: "Week number (defaults to current week)",
           required: false,
-          min_value: 0,
-          max_value: 21
+          min_value: 1,
+          max_value: 22
         }
       ],
       type: ApplicationCommandType.ChatInput,

@@ -44,6 +44,7 @@ import teamScheduleHandler from "./commands/team_schedule";
 import draftHandler from "./commands/draft";
 import progressionHandler from "./commands/progression";
 import powerrankingsHandler from "./commands/powerrankings";
+import rosterrankingsHandler from "./commands/rosterrankings";
 import gamerecapHandler from "./commands/gamerecap";
 import playerrankingsHandler from "./commands/playerrankings";
 import predictionsHandler from "./commands/predictions";
@@ -53,6 +54,10 @@ import pickemLeaderboardHandler from "./commands/pickem_leaderboard";
 import teamStatsHandler from "./commands/team_stats";
 import awardsHandler from "./commands/awards";
 import transactionsHandler from "./commands/transactions";
+import stateoftheleagueHandler from "./commands/stateoftheleague";
+import farecapHandler from "./commands/farecap";
+import teamreportHandler from "./commands/teamreport";
+import autopostHandler from "./commands/autopost";
 
 
 
@@ -75,6 +80,7 @@ export type MessageComponentInteraction = {
   token: string;
   data: APIMessageComponentInteractionData;
   guild_id: string;
+  member?: APIInteractionGuildMember;  // Added for user info access
 };
 
 export interface CommandHandler {
@@ -125,6 +131,7 @@ const SlashCommands: CommandsHandler = {
   draft: draftHandler,
   progression: progressionHandler,
   powerrankings: powerrankingsHandler,
+  rosterrankings: rosterrankingsHandler,
   gamerecap: gamerecapHandler,
   playerrankings: playerrankingsHandler,
   predictions: predictionsHandler,
@@ -134,6 +141,10 @@ const SlashCommands: CommandsHandler = {
   teamstats: teamStatsHandler,
   awards: awardsHandler,
   transactions: transactionsHandler,
+  stateoftheleague: stateoftheleagueHandler,
+  farecap: farecapHandler,
+  teamreport: teamreportHandler,
+  autopost: autopostHandler,
 };
 
 const AutocompleteCommands: AutocompleteHandlers = {
@@ -157,6 +168,7 @@ const MessageComponents: MessageComponentHandlers = {
   gamerecap_game_selector: gamerecapHandler as any,
   gamerecap_analyst_selector: gamerecapHandler as any,
   powerrankings_range: powerrankingsHandler as any,
+  rosterrankings_range: rosterrankingsHandler as any,
 };
 
 export async function handleCommand(
@@ -235,6 +247,7 @@ export async function handleMessageComponent(
   client: DiscordClient
 ) {
   const custom_id = interaction.custom_id;
+  console.log(`🔘 Message component interaction received: ${custom_id}`)
   const handler = MessageComponents[custom_id];
   if (handler) {
     try {
@@ -276,8 +289,15 @@ export async function handleMessageComponent(
         ctx.status = 200;
         ctx.set("Content-Type", "application/json");
         ctx.body = body;
-      } else if (parsedCustomId.action === 'pickem_select' || parsedCustomId.action === 'pickem_page') {
+      } else if (parsedCustomId.action === 'pickem_select' || parsedCustomId.action === 'pickem_page' || parsedCustomId.a === 'ps' || parsedCustomId.a === 'pp') {
+        // Handle both old (action=pickem_*) and new shortened (a=ps/pp) formats
         const body = await (pickemHandler as any).handleInteraction(interaction, client);
+        ctx.status = 200;
+        ctx.set("Content-Type", "application/json");
+        ctx.body = body;
+      } else if (parsedCustomId.pr != null) {
+        console.log(`🔄 Routing to playerrankings handler for pr=${parsedCustomId.pr}`)
+        const body = await (playerrankingsHandler as any).handleInteraction(interaction, client);
         ctx.status = 200;
         ctx.set("Content-Type", "application/json");
         ctx.body = body;

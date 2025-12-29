@@ -48,6 +48,8 @@ export type WeekPredictions = {
   }
   createdAt: Timestamp
   scoredAt?: Timestamp
+  lockedAt?: Timestamp  // When picks were locked (broadcast started or manual lock)
+  lockedBy?: string     // "broadcast" or "manual" or userId who locked
 }
 
 export type UserSeasonStats = {
@@ -141,6 +143,29 @@ interface PickemDB {
     leagueId: string,
     seasonIndex: number
   ): Promise<UserSeasonStats[]>
+
+  // Lock management
+  lockWeek(
+    guildId: string,
+    leagueId: string,
+    seasonIndex: number,
+    weekIndex: number,
+    lockedBy: string
+  ): Promise<void>
+
+  unlockWeek(
+    guildId: string,
+    leagueId: string,
+    seasonIndex: number,
+    weekIndex: number
+  ): Promise<void>
+
+  isWeekLocked(
+    guildId: string,
+    leagueId: string,
+    seasonIndex: number,
+    weekIndex: number
+  ): Promise<boolean>
 }
 
 function createWeekKey(guildId: string, leagueId: string, seasonIndex: number, weekIndex: number): string {
@@ -426,6 +451,45 @@ const PickemDB: PickemDB = {
       }
       return b.totalPicks - a.totalPicks
     })
+  },
+
+  async lockWeek(
+    guildId: string,
+    leagueId: string,
+    seasonIndex: number,
+    weekIndex: number,
+    lockedBy: string
+  ): Promise<void> {
+    const weekKey = createWeekKey(guildId, leagueId, seasonIndex, weekIndex)
+    await db.collection('pickem_weeks').doc(weekKey).set({
+      lockedAt: FieldValue.serverTimestamp(),
+      lockedBy
+    }, { merge: true })
+    console.log(`🔒 Pick'em locked for Week ${weekIndex + 1} by ${lockedBy}`)
+  },
+
+  async unlockWeek(
+    guildId: string,
+    leagueId: string,
+    seasonIndex: number,
+    weekIndex: number
+  ): Promise<void> {
+    const weekKey = createWeekKey(guildId, leagueId, seasonIndex, weekIndex)
+    await db.collection('pickem_weeks').doc(weekKey).update({
+      lockedAt: FieldValue.delete(),
+      lockedBy: FieldValue.delete()
+    })
+    console.log(`🔓 Pick'em unlocked for Week ${weekIndex + 1}`)
+  },
+
+  async isWeekLocked(
+    guildId: string,
+    leagueId: string,
+    seasonIndex: number,
+    weekIndex: number
+  ): Promise<boolean> {
+    const weekData = await this.getWeekPredictions(guildId, leagueId, seasonIndex, weekIndex)
+    return weekData?.lockedAt != null
   }
 }
 

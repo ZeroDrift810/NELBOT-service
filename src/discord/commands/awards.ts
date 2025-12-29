@@ -251,7 +251,7 @@ async function showSeasonAwards(
         flags: 32768,
         components: [{
           type: ComponentType.TextDisplay,
-          content: `# ${year} Season Awards\n\n*No awards have been granted for this season yet.*`
+          content: `# ${year} Season Awards\n\n*No awards have been granted for this season yet.*\n\n💡 Use \`/awards give\` to grant awards to players.`
         }]
       })
       return
@@ -324,7 +324,7 @@ async function showAwardHistory(
         flags: 32768,
         components: [{
           type: ComponentType.TextDisplay,
-          content: `# ${emoji} ${label} History\n\n*No winners on record.*`
+          content: `# ${emoji} ${label} History\n\n*No winners on record.*\n\n💡 Use \`/awards give\` to grant awards to players.`
         }]
       })
       return

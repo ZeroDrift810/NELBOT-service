@@ -93,6 +93,11 @@ web_modules/
 .env.production.local
 .env.local
 .base.env
+.base.env.txt
+*.env.txt
+
+# League data exports (may contain personal info)
+nel_*.json
 
 # Firebase/Google Cloud credentials
 nel-bot-service-account.json

@@ -98,13 +98,13 @@ async function generatePredictions(token: string, client: DiscordClient, league:
       return
     }
 
-    // Build display message
+    // Build display message - compact format to stay under 4000 chars
     let message = `# 📊 NEL WEEK ${targetWeek + 1} PREDICTIONS\n`
     message += `## Season ${MADDEN_SEASON + targetSeason}\n\n`
 
     // Calculate overall confidence
     const avgConfidence = predictions.reduce((sum, p) => sum + p.confidence, 0) / predictions.length
-    message += `*Average Confidence: ${avgConfidence.toFixed(1)}%*\n\n`
+    message += `*Avg Confidence: ${avgConfidence.toFixed(0)}%*\n\n`
 
     // Sort predictions by confidence (highest first)
     const sortedPredictions = [...predictions].sort((a, b) => b.confidence - a.confidence)
@@ -123,14 +123,17 @@ async function generatePredictions(token: string, client: DiscordClient, league:
       if (pred.confidence < 70) confidenceEmoji = '🟡' // Medium
       if (pred.confidence < 60) confidenceEmoji = '🔴' // Low (tossup)
 
-      message += `${confidenceEmoji} **${awayEmoji} ${awayTeam.displayName}** at **${homeEmoji} ${homeTeam.displayName}**\n`
-      message += `Prediction: **${winnerEmoji} ${winnerTeam.displayName}** ${pred.predictedWinnerScore}-${pred.predictedLoserScore}\n`
-      message += `Confidence: ${pred.confidence}% • ${pred.reasoning}\n\n`
+      // Compact format: one line per game
+      message += `${confidenceEmoji} ${awayEmoji} ${awayTeam.abbrName} @ ${homeEmoji} ${homeTeam.abbrName} → **${winnerEmoji} ${winnerTeam.abbrName}** ${pred.predictedWinnerScore}-${pred.predictedLoserScore} (${pred.confidence}%)\n`
     }
 
-    message += `───────────────────────\n`
-    message += `🟢 High Confidence (70%+) • 🟡 Medium (60-69%) • 🔴 Tossup (<60%)\n`
-    message += `\n💡 Predictions based on power rankings, home field advantage, and matchup analysis`
+    message += `\n───────────────────────\n`
+    message += `🟢 High (70%+) • 🟡 Medium (60-69%) • 🔴 Tossup (<60%)`
+
+    // Safety check for character limit
+    if (message.length > 3900) {
+      message = message.substring(0, 3850) + `\n\n...*[Truncated - ${sortedPredictions.length} games total]*`
+    }
 
     await client.editOriginalInteraction(token, {
       flags: 32768,

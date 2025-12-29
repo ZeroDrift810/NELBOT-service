@@ -14,6 +14,8 @@ import MaddenClient from "../db/madden_db"
 import MaddenDB from "../db/madden_db"
 import { GameResult, MaddenGame } from "../export/madden_league_types"
 import { leagueLogosView } from "../db/view"
+import { startAutoPostScheduler } from "./autopost_scheduler"
+import PickemDB from "./pickem_db"
 
 const router = new Router({ prefix: "/discord/webhook" })
 
@@ -49,7 +51,13 @@ async function handleInteraction(ctx: ParameterizedContext, client: DiscordClien
   } else if (interactionType === InteractionType.MessageComponent) {
     const messageComponentInteraction = interaction as APIMessageComponentInteraction
     if (messageComponentInteraction.guild_id) {
-      await handleMessageComponent({ token: messageComponentInteraction.token, custom_id: messageComponentInteraction.data.custom_id, data: messageComponentInteraction.data, guild_id: messageComponentInteraction.guild_id }, ctx, client)
+      await handleMessageComponent({
+        token: messageComponentInteraction.token,
+        custom_id: messageComponentInteraction.data.custom_id,
+        data: messageComponentInteraction.data,
+        guild_id: messageComponentInteraction.guild_id,
+        member: messageComponentInteraction.member  // Include member for user info
+      }, ctx, client)
     }
     return
   }
@@ -80,6 +88,25 @@ EventDB.on<MaddenBroadcastEvent>("MADDEN_BROADCAST", async (events) => {
         await prodClient.createMessage(channel, `${role} ${broadcastEvent.title}\n\n${broadcastEvent.video}`, ["roles"])
       } catch (e) {
         console.error("could not send broacast")
+      }
+
+      // Auto-lock pick'em when broadcast starts
+      try {
+        const leagueId = leagueSettings.commands.madden_league?.league_id
+        if (leagueId) {
+          // Get current week from schedule
+          const weeks = await MaddenDB.getAllWeeks(leagueId)
+          if (weeks.length > 0) {
+            const currentSeason = weeks[0].seasonIndex
+            const currentWeek = weeks[0].weekIndex
+
+            // Lock picks for current week
+            await PickemDB.lockWeek(discordServer, leagueId, currentSeason, currentWeek, 'broadcast')
+            console.log(`🔒 Auto-locked pick'em for Week ${currentWeek + 1} due to broadcast: ${broadcastEvent.title}`)
+          }
+        }
+      } catch (e) {
+        console.error("Could not auto-lock pick'em:", e)
       }
     }
   })
@@ -147,6 +174,41 @@ MaddenDB.on<MaddenGame>("MADDEN_SCHEDULE", async (events) => {
             }
           }
         }))
+
+        // Auto-score pick'em for finished games
+        try {
+          console.log(`🎯 Auto-scoring pick'em for ${finishedGames.length} finished games (Week ${week}, Season ${season})`)
+
+          // Build game results from finished games
+          const gameResults: { [scheduleId: number]: { actualWinner: number, homeScore: number, awayScore: number } } = {}
+          for (const game of finishedGames) {
+            // Determine winner based on status
+            let actualWinner: number
+            if (game.status === GameResult.HOME_WIN) {
+              actualWinner = game.homeTeamId
+            } else if (game.status === GameResult.AWAY_WIN) {
+              actualWinner = game.awayTeamId
+            } else {
+              // Tie - use home team as "winner" for scoring purposes (or skip)
+              actualWinner = game.homeTeamId
+            }
+
+            gameResults[game.scheduleId] = {
+              actualWinner,
+              homeScore: game.homeScore,
+              awayScore: game.awayScore
+            }
+          }
+
+          // Save game results and score picks
+          const weekIndex = finishedGame.weekIndex
+          await PickemDB.saveGameResults(guild_id, leagueId, season, weekIndex, gameResults)
+          await PickemDB.scoreWeekPicks(guild_id, leagueId, season, weekIndex)
+
+          console.log(`✅ Pick'em scored for Week ${week}, Season ${season}`)
+        } catch (e) {
+          console.error(`❌ Error auto-scoring pick'em:`, e)
+        }
       }
     }))
   })
@@ -255,6 +317,8 @@ discordClient.on("messageReactionAdd", async (msg, reactor, reaction) => {
 })
 if (process.env.NO_CLIENT !== "true") {
   discordClient.connect()
+  // Start the auto-post scheduler
+  startAutoPostScheduler(prodClient)
 }
 
 

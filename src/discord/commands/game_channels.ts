@@ -110,8 +110,15 @@ async function createGameChannels(client: DiscordClient, db: Firestore, token: s
     let exportEmoji = SnallabotCommandReactions.FINISHED
     let errorMessage = ""
     try {
-      const exporter = await exporterForLeague(Number(leagueId), ExportContext.AUTO)
-      await exporter.exportSurroundingWeek()
+      // Allow 90 seconds for exports (EA servers can be slow)
+      const exportPromise = (async () => {
+        const exporter = await exporterForLeague(Number(leagueId), ExportContext.AUTO)
+        await exporter.exportSurroundingWeek()
+      })()
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Export timed out after 90 seconds')), 90000)
+      )
+      await Promise.race([exportPromise, timeoutPromise])
     } catch (e) {
       exportEmoji = SnallabotCommandReactions.ERROR
       if (e instanceof EAAccountError) {
@@ -119,6 +126,7 @@ async function createGameChannels(client: DiscordClient, db: Firestore, token: s
       } else {
         errorMessage = `Export Failed with: ${e}`
       }
+      console.error('Export error:', e)
     }
     await client.editOriginalInteraction(token, {
       content: `Creating Game Channels:

@@ -91,11 +91,15 @@ async function handlePlayerEvents(events: SnallabotEvent<Player>[]): Promise<voi
   // Process each league's events
   for (const [leagueId, playerEvents] of eventsByLeague) {
     try {
+      // Debug: Log how many player events we're processing
+      console.log(`[CONTRACT] Processing ${playerEvents.length} player events for league ${leagueId}`)
+
       // Get settings for guilds connected to this league
       const allSettings = await LeagueSettingsDB.getLeagueSettingsForLeagueId(leagueId)
       const settingsWithTransactions = allSettings.filter(s => s.commands.transactions?.channel)
 
       if (settingsWithTransactions.length === 0) {
+        console.log(`[CONTRACT] No transaction channel configured for league ${leagueId}`)
         // No guilds configured for transaction notifications
         // Still update the cache
         for (const playerEvent of playerEvents) {
@@ -154,6 +158,9 @@ async function handlePlayerEvents(events: SnallabotEvent<Player>[]): Promise<voi
           contractYearsLeft: playerEvent.contractYearsLeft
         })
       }
+
+      // Debug: Log signing detection results
+      console.log(`[CONTRACT] Detected ${signings.length} signings from ${playerEvents.length} player events for league ${leagueId}`)
 
       // Post notifications for signings
       if (signings.length > 0) {

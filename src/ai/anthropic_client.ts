@@ -51,6 +51,13 @@ export type GameRecapData = {
     penaltyYards: number
     thirdDownConv: number
     thirdDownAtt: number
+    sacks: number
+    interceptions: number
+    fumbles: number
+    redZoneAtt: number
+    redZoneTD: number
+    fourthDownConv: number
+    fourthDownAtt: number
   }
   awayStats: {
     passYards: number
@@ -61,9 +68,27 @@ export type GameRecapData = {
     penaltyYards: number
     thirdDownConv: number
     thirdDownAtt: number
+    sacks: number
+    interceptions: number
+    fumbles: number
+    redZoneAtt: number
+    redZoneTD: number
+    fourthDownConv: number
+    fourthDownAtt: number
   }
   topPerformers: {
     name: string
+    team: string
+    stat: string
+    category: 'passing' | 'rushing' | 'receiving' | 'defense'
+  }[]
+  explosivePlays: {
+    player: string
+    team: string
+    description: string
+  }[]
+  keyDefensivePlays: {
+    player: string
     team: string
     stat: string
   }[]
@@ -143,6 +168,20 @@ export async function generateGameRecap(
     'Al Michaels': 'You are Al Michaels providing game analysis. Be legendary and poetic. Paint the picture of the game with narrative flair.'
   };
 
+  // Format red zone efficiency
+  const winnerRZ = winnerStats.redZoneAtt > 0 ? `${winnerStats.redZoneTD}/${winnerStats.redZoneAtt}` : 'N/A'
+  const loserRZ = loserStats.redZoneAtt > 0 ? `${loserStats.redZoneTD}/${loserStats.redZoneAtt}` : 'N/A'
+
+  // Format explosive plays
+  const explosivePlaysText = data.explosivePlays.length > 0
+    ? `\nExplosive Plays:\n${data.explosivePlays.map(p => `- ${p.player} (${p.team}): ${p.description}`).join('\n')}`
+    : ''
+
+  // Format key defensive plays
+  const defensiveText = data.keyDefensivePlays.length > 0
+    ? `\nKey Defensive Plays:\n${data.keyDefensivePlays.map(p => `- ${p.player} (${p.team}): ${p.stat}`).join('\n')}`
+    : ''
+
   const prompt = `You are analyzing a FICTIONAL video game. Write a game recap using ONLY the stats below. DO NOT mention real NFL history, real trades, or any context beyond this specific game's data.
 
 Game: ${data.awayTeam} ${data.awayScore} at ${data.homeTeam} ${data.homeScore}
@@ -150,16 +189,22 @@ Week ${data.weekIndex + 1}, Season ${2024 + data.seasonIndex}
 
 Winner (${winner}):
 Pass: ${winnerStats.passYards} yards | Rush: ${winnerStats.rushYards} yards | Total: ${winnerStats.totalYards} yards
-Turnovers: ${winnerStats.turnovers} | 3rd Down: ${winnerStats.thirdDownConv}/${winnerStats.thirdDownAtt}
+Turnovers: ${winnerStats.turnovers} (${winnerStats.interceptions} INT, ${winnerStats.fumbles} FUM) | Sacks Allowed: ${winnerStats.sacks}
+3rd Down: ${winnerStats.thirdDownConv}/${winnerStats.thirdDownAtt} | 4th Down: ${winnerStats.fourthDownConv}/${winnerStats.fourthDownAtt}
+Red Zone: ${winnerRZ} | Penalties: ${winnerStats.penalties} (${winnerStats.penaltyYards} yds)
 
 Loser:
 Pass: ${loserStats.passYards} yards | Rush: ${loserStats.rushYards} yards | Total: ${loserStats.totalYards} yards
-Turnovers: ${loserStats.turnovers} | 3rd Down: ${loserStats.thirdDownConv}/${loserStats.thirdDownAtt}
+Turnovers: ${loserStats.turnovers} (${loserStats.interceptions} INT, ${loserStats.fumbles} FUM) | Sacks Allowed: ${loserStats.sacks}
+3rd Down: ${loserStats.thirdDownConv}/${loserStats.thirdDownAtt} | 4th Down: ${loserStats.fourthDownConv}/${loserStats.fourthDownAtt}
+Red Zone: ${loserRZ} | Penalties: ${loserStats.penalties} (${loserStats.penaltyYards} yds)
 
 Top Performers:
 ${data.topPerformers.map(p => `${p.name} (${p.team}): ${p.stat}`).join('\n')}
+${explosivePlaysText}
+${defensiveText}
 
-Write 2-3 paragraphs in ${analyst}'s style. Focus ONLY on the stats above. Mention top performers by name from the list. Do not reference any player not listed above. Do not reference real NFL history.
+Write 2-3 paragraphs in ${analyst}'s style. Focus ONLY on the stats above. Mention top performers by name from the list. Highlight any explosive plays or key defensive moments. Do not reference any player not listed above. Do not reference real NFL history.
 
 Write the recap:`;
 
@@ -244,6 +289,74 @@ Write the preview:`;
   } catch (error) {
     console.error("Error generating GOTW preview:", error);
     throw new Error(`Failed to generate preview: ${error}`);
+  }
+}
+
+export type TeamRosterRankingData = {
+  rank: number
+  teamName: string
+  rosterScore: number
+  avgOvr: number
+  starterOvr: number
+  eliteCount: number
+  superEliteCount: number
+  xFactorCount: number
+  superstarCount: number
+  strongestGroup: string
+  weakestGroup: string
+  topPlayerNames: string[]
+}
+
+/**
+ * Generate AI roster ranking narrative for a team
+ */
+export async function generateRosterRankingNarrative(data: TeamRosterRankingData): Promise<string> {
+  if (!anthropic) {
+    throw new Error("Anthropic API key not configured. Add ANTHROPIC_API_KEY to your .env file.");
+  }
+
+  const prompt = `You're analyzing a Madden video game franchise roster before the season starts. Write a punchy, analyst-style take on this team's roster using ONLY the data provided.
+
+Team: ${data.teamName}
+Roster Score: ${data.rosterScore}
+Average OVR: ${data.avgOvr}
+Starter OVR: ${data.starterOvr}
+Elite Players (85+): ${data.eliteCount}
+Super Elite (90+): ${data.superEliteCount}
+X-Factors: ${data.xFactorCount}
+Superstars: ${data.superstarCount}
+Strongest Position: ${data.strongestGroup}
+Weakest Position: ${data.weakestGroup}
+Top Players: ${data.topPlayerNames.join(', ')}
+
+Write 2-3 SHORT sentences with personality. Be direct, engaging, and roster-focused. Reference specific strengths/weaknesses. Keep it under 90 words.
+
+Examples:
+- "Loaded with 5 X-Factors and an elite secondary, this roster is built to dominate. Watch out for that weak O-line though."
+- "Paper thin depth but the starters are absolutely stacked at 87.2 OVR. Live or die by the top 22."
+- "No flash, no superstar power, just a balanced roster that could surprise some people."
+
+Write your take:`;
+
+  try {
+    const message = await anthropic.messages.create({
+      model: "claude-3-haiku-20240307",
+      max_tokens: 100,
+      messages: [{
+        role: "user",
+        content: prompt
+      }]
+    });
+
+    const content = message.content[0];
+    if (content.type === 'text') {
+      return content.text.trim();
+    }
+
+    throw new Error("Unexpected response format from Anthropic API");
+  } catch (error) {
+    console.error("Error generating roster ranking narrative:", error);
+    throw new Error(`Failed to generate narrative: ${error}`);
   }
 }
 

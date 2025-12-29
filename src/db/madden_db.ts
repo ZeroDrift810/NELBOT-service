@@ -47,7 +47,28 @@ export enum MaddenEvents {
   MADDEN_RUSHING_STAT = "MADDEN_RUSHING_STAT",
   MADDEN_DEFENSIVE_STAT = "MADDEN_DEFENSIVE_STAT",
   MADDEN_RECEIVING_STAT = "MADDEN_RECEIVING_STAT",
-  MADDEN_PLAYER = "MADDEN_PLAYER"
+  MADDEN_PLAYER = "MADDEN_PLAYER",
+  MADDEN_DRAFT_PICK = "MADDEN_DRAFT_PICK"
+}
+
+// Draft pick data structure
+export type DraftPick = {
+  leagueId: string,
+  seasonIndex: number,
+  round: number,
+  pick: number,
+  overallPick: number,
+  teamId: number,
+  teamAbbrName: string,
+  rosterId: string,
+  firstName: string,
+  lastName: string,
+  position: string,
+  college: string,
+  draftedOvr: number,
+  devTrait: string,
+  age: number,
+  capturedAt: Date
 }
 
 export type PlayerListQuery = { teamId?: number, position?: string, rookie?: boolean }
@@ -123,7 +144,11 @@ interface MaddenDB {
   getExportStatus(leagueId: string): Promise<ExportStatus | undefined>,
   getStatsForGame(leagueId: string, season: number, week: number, scheduleId: number): Promise<GameStats>,
   getTeamSchedule(leagueId: string, season?: number): Promise<MaddenGame[]>,
-  getWeeklyStats(leagueId: string, seasonIndex: number, weekIndex: number): Promise<PlayerStats>
+  getWeeklyStats(leagueId: string, seasonIndex: number, weekIndex: number): Promise<PlayerStats>,
+  // Draft pick tracking
+  storeDraftPick(pick: DraftPick): Promise<void>,
+  getDraftPicks(leagueId: string, seasonIndex: number): Promise<DraftPick[]>,
+  hasDraftPick(leagueId: string, seasonIndex: number, rosterId: string): Promise<boolean>
 }
 
 function convertDate(firebaseObject: any) {
@@ -534,8 +559,11 @@ const MaddenDB: MaddenDB = {
       const [_, gamesInWeek] = e
       return gamesInWeek ? [gamesInWeek[0]] : []
     })
-    return distinctWeekSeason
-
+    // Sort by season (desc) then week (desc) so most recent is first
+    return distinctWeekSeason.sort((a, b) => {
+      if (a.seasonIndex !== b.seasonIndex) return b.seasonIndex - a.seasonIndex
+      return b.weekIndex - a.weekIndex
+    })
   }
   ,
   getStandingForTeam: async function(leagueId: string, teamId: number) {
@@ -875,6 +903,45 @@ const MaddenDB: MaddenDB = {
       [PlayerStatType.KICKING]: kicking,
       [PlayerStatType.PUNTING]: punting,
     }
+  },
+
+  // Draft pick tracking functions
+  storeDraftPick: async function(pick: DraftPick): Promise<void> {
+    const docId = `${pick.seasonIndex}_${pick.round}_${pick.pick}`
+    await db.collection("madden_data26").doc(pick.leagueId)
+      .collection(MaddenEvents.MADDEN_DRAFT_PICK)
+      .doc(docId)
+      .set({
+        ...pick,
+        capturedAt: new Date()
+      })
+    console.log(`[Draft] Stored pick: Rd ${pick.round} Pick ${pick.pick} - ${pick.firstName} ${pick.lastName} to ${pick.teamAbbrName}`)
+  },
+
+  getDraftPicks: async function(leagueId: string, seasonIndex: number): Promise<DraftPick[]> {
+    const snapshot = await db.collection("madden_data26").doc(leagueId)
+      .collection(MaddenEvents.MADDEN_DRAFT_PICK)
+      .where("seasonIndex", "==", seasonIndex)
+      .get()
+
+    // Sort in memory to avoid needing a compound index
+    const picks = snapshot.docs.map(d => convertDate(d.data()) as DraftPick)
+    return picks.sort((a, b) => {
+      if (a.round !== b.round) return a.round - b.round
+      return a.pick - b.pick
+    })
+  },
+
+  hasDraftPick: async function(leagueId: string, seasonIndex: number, rosterId: string): Promise<boolean> {
+    // Use the document ID pattern to check directly instead of a compound query
+    // Document IDs are stored as: seasonIndex_round_pick
+    // Since we don't know round/pick, we need to check all picks for the season
+    const snapshot = await db.collection("madden_data26").doc(leagueId)
+      .collection(MaddenEvents.MADDEN_DRAFT_PICK)
+      .where("seasonIndex", "==", seasonIndex)
+      .get()
+
+    return snapshot.docs.some(d => d.data().rosterId === rosterId)
   }
 }
 

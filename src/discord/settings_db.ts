@@ -37,6 +37,9 @@ export type TeamAssignments = { [key: string]: TeamAssignment }
 export type TeamConfiguration = { channel: ChannelId, messageId: MessageId, useRoleUpdates: boolean, assignments: TeamAssignments }
 
 export type TransactionConfiguration = { channel: ChannelId }
+export type DraftConfiguration = { channel: ChannelId }
+export type RosterRankingsConfiguration = { channel: ChannelId, role?: RoleId }
+export type PickemConfiguration = { channel: ChannelId, role?: RoleId }
 
 
 export type LeagueSettings = {
@@ -48,7 +51,10 @@ export type LeagueSettings = {
     teams?: TeamConfiguration,
     waitlist?: WaitlistConfiguration,
     madden_league?: MaddenLeagueConfiguration,
-    transactions?: TransactionConfiguration
+    transactions?: TransactionConfiguration,
+    draft?: DraftConfiguration,
+    rosterrankings?: RosterRankingsConfiguration,
+    pickem?: PickemConfiguration
   },
   guildId: string
 }
@@ -76,7 +82,10 @@ interface LeagueSettingsDB {
   removeAssignment(guildId: string, teamId: number | string): Promise<void>,
   removeAllAssignments(guildId: string): Promise<void>,
   getLeagueSettingsForLeagueId(leagueId: string): Promise<LeagueSettings[]>,
-  configureTransactions(guildId: string, transactionSettings: TransactionConfiguration): Promise<void>
+  configureTransactions(guildId: string, transactionSettings: TransactionConfiguration): Promise<void>,
+  configureDraft(guildId: string, draftSettings: DraftConfiguration): Promise<void>,
+  configureRosterRankings(guildId: string, rosterRankingsSettings: RosterRankingsConfiguration): Promise<void>,
+  configurePickem(guildId: string, pickemSettings: PickemConfiguration): Promise<void>
 }
 
 export function createWeekKey(season: number, week: number) {
@@ -247,6 +256,30 @@ const LeagueSettingsDB: LeagueSettingsDB = {
     await db.collection('league_settings').doc(guildId).set({
       commands: {
         transactions: transactionSettings
+      }
+    }, { merge: true })
+  },
+
+  async configureDraft(guildId: string, draftSettings: DraftConfiguration): Promise<void> {
+    await db.collection('league_settings').doc(guildId).set({
+      commands: {
+        draft: draftSettings
+      }
+    }, { merge: true })
+  },
+
+  async configureRosterRankings(guildId: string, rosterRankingsSettings: RosterRankingsConfiguration): Promise<void> {
+    await db.collection('league_settings').doc(guildId).set({
+      commands: {
+        rosterrankings: rosterRankingsSettings
+      }
+    }, { merge: true })
+  },
+
+  async configurePickem(guildId: string, pickemSettings: PickemConfiguration): Promise<void> {
+    await db.collection('league_settings').doc(guildId).set({
+      commands: {
+        pickem: pickemSettings
       }
     }, { merge: true })
   }

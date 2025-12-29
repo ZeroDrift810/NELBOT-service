@@ -219,20 +219,29 @@ async function sendBlazeRequest<T>(token: TokenInformation, session: SessionInfo
 }
 
 async function getExportData<T>(token: TokenInformation, session: SessionInformation, exportType: LeagueData, body: Record<string, any>): Promise<T> {
-  const res1 = await fetch(
-    `https://wal2.tools.gos.bio-iad.ea.com/wal/mca/${exportType}/${session.sessionKey}`,
-    {
-      dispatcher: dispatcher,
-      method: "POST",
-      headers: headers(token),
-      body: JSON.stringify(body)
-    }
-  )
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout
+
   try {
+    const res1 = await fetch(
+      `https://wal2.tools.gos.bio-iad.ea.com/wal/mca/${exportType}/${session.sessionKey}`,
+      {
+        dispatcher: dispatcher,
+        method: "POST",
+        headers: headers(token),
+        body: JSON.stringify(body),
+        signal: controller.signal
+      }
+    )
+    clearTimeout(timeoutId)
     const text = await res1.text()
     const replacedText = text.replaceAll(/[\u0000-\u001F\u007F-\u009F]/g, "")
     return JSON.parse(replacedText) as T
   } catch (e) {
+    clearTimeout(timeoutId)
+    if (e instanceof Error && e.name === 'AbortError') {
+      throw new EAAccountError(`EA API request timed out after 60 seconds for ${exportType}`, "Try again or check EA server status")
+    }
     throw new EAAccountError(`Could not fetch league data, error: ${e}`, "No Guidance")
   }
 }
@@ -420,28 +429,38 @@ export async function getTokenForLeague(blazeId: string): Promise<StoredTokenInf
 }
 
 export async function storedTokenClient(leagueId: number): Promise<StoredEAClient> {
+  console.log(`[EA_CLIENT] Getting league doc from Firestore...`)
   const doc = await db.collection("madden_data26").doc(`${leagueId}`).get()
   if (!doc.exists) {
     throw new Error(`League ${leagueId} not connected to snallabot`)
   }
   const leagueConnection = doc.data() as StoredMaddenConnection
   if (leagueConnection.blazeId) {
+    console.log(`[EA_CLIENT] Found blazeId: ${leagueConnection.blazeId}`)
   } else {
     throw new Error(`League ${leagueId} not connected to snallabot dashboard. Try setting up the dashboard again`)
   }
   let token: StoredTokenInformation
   try {
+    console.log(`[EA_CLIENT] Getting token for league...`)
     token = await getTokenForLeague(leagueConnection.blazeId)
+    console.log(`[EA_CLIENT] Got token`)
   } catch (e) {
     throw new Error(`League ${leagueId} is connected, but its missing EA connection with id ${leagueConnection.blazeId}`)
   }
+  console.log(`[EA_CLIENT] Refreshing token...`)
   const newToken = await refreshToken(token.token)
+  console.log(`[EA_CLIENT] Token refreshed, getting Blaze session...`)
   const session = token.session ? token.session : await retrieveBlazeSession(newToken)
+  console.log(`[EA_CLIENT] Refreshing Blaze session...`)
   const newSession = await refreshBlazeSession(newToken, session)
+  console.log(`[EA_CLIENT] Blaze session ready, saving to Firestore...`)
   token.token = newToken
   token.session = newSession
   await db.collection("blaze_tokens").doc(`${token.token.blazeId}`).set(token, { merge: true })
+  console.log(`[EA_CLIENT] Creating EA client...`)
   const eaClient = await ephemeralClientFromToken(newToken, newSession)
+  console.log(`[EA_CLIENT] EA client created`)
   return {
     getExports() {
       return leagueConnection.destinations
@@ -543,7 +562,9 @@ const staggeringCall = async <T>(p: Promise<T>, waitTime: number = STAGGERED_MAX
   return await p
 }
 export async function exporterForLeague(leagueId: number, context: ExportContext): Promise<MaddenExporter> {
+  console.log(`[EA_CLIENT] Getting stored token client for league ${leagueId}...`)
   const client = await storedTokenClient(leagueId)
+  console.log(`[EA_CLIENT] Got client, getting exports...`)
   const exports = client.getExports()
   const contextualExports = Object.fromEntries(Object.entries(exports).filter(e => {
     const [_, destination] = e
@@ -555,11 +576,16 @@ export async function exporterForLeague(leagueId: number, context: ExportContext
       return true
     }
   }))
+  console.log(`[EA_CLIENT] Getting league info from EA...`)
   const leagueInfo = await client.getLeagueInfo(leagueId)
+  const seasonInfo = leagueInfo.careerHubInfo?.seasonInfo
+  console.log(`[EA_CLIENT] Got league info: calendarYear=${seasonInfo?.calendarYear}, superBowl=${seasonInfo?.superBowlNumber}, week=${seasonInfo?.seasonWeek}, weekType=${seasonInfo?.seasonWeekType}`)
   return {
     exportCurrentWeek: async function() {
       const weekIndex = leagueInfo.careerHubInfo.seasonInfo.seasonWeek
-      const stage = leagueInfo.careerHubInfo.seasonInfo.seasonWeekType === 0 ? 0 : 1
+      const seasonWeekType = leagueInfo.careerHubInfo.seasonInfo.seasonWeekType
+      const stage = seasonWeekType === 0 ? 0 : 1
+      console.log(`[EA_EXPORT] Current week from EA: weekIndex=${weekIndex}, seasonWeekType=${seasonWeekType}, stage=${stage === 0 ? 'PRESEASON' : 'REGULAR'}`)
       await this.exportSpecificWeeks([{ weekIndex, stage }])
     },
     exportSurroundingWeek: async function() {
@@ -590,6 +616,7 @@ export async function exporterForLeague(leagueId: number, context: ExportContext
       await this.exportSpecificWeeks(weeksToExport, onProgress)
     },
     exportSpecificWeeks: async function(weeks: { weekIndex: number, stage: number }[], onProgress?: ExportProgressCallback) {
+      console.log(`[EA_EXPORT] Starting exportSpecificWeeks for ${weeks.length} weeks...`)
       const destinations = Object.values(contextualExports)
       const leagueData = { weeks: [] } as any
       const leagueInfoRequests = [] as Promise<any>[]
@@ -599,12 +626,15 @@ export async function exporterForLeague(leagueId: number, context: ExportContext
       if (onProgress) {
         await onProgress("Exporting league info (teams & standings)...")
       }
+      console.log(`[EA_EXPORT] Getting teams and standings from EA...`)
       if (destinations.some(e => e.leagueInfo)) {
         leagueInfoRequests.push(client.getTeams(leagueId).then(t => leagueData.leagueTeams = t))
         leagueInfoRequests.push(client.getStandings(leagueId).then(t => leagueData.standings = t))
       }
       await Promise.all(leagueInfoRequests)
+      console.log(`[EA_EXPORT] Got teams/standings, saving to Firestore...`)
       await exportData(leagueData as ExportData, contextualExports, `${leagueId}`, client.getSystemConsole())
+      console.log(`[EA_EXPORT] Teams/standings saved`)
       if (destinations.some(e => e.weeklyStats)) {
         // Process weeks in batches of 4 to reduce memory usage on big exports
         const batchSize = 4;
@@ -615,8 +645,9 @@ export async function exporterForLeague(leagueId: number, context: ExportContext
           const weekBatch = weeks.slice(i, i + batchSize);
           const batchDataRequests = [] as Promise<any>[]
 
+          const weekNames = weekBatch.map(w => w.stage === 0 ? `PS${w.weekIndex + 1}` : `Week ${w.weekIndex + 1}`).join(", ")
+          console.log(`[EA_EXPORT] Fetching weekly stats batch ${batchNum}/${totalBatches}: ${weekNames} (stageIndex=${weekBatch[0]?.stage})...`)
           if (onProgress) {
-            const weekNames = weekBatch.map(w => w.stage === 0 ? `PS${w.weekIndex + 1}` : `Week ${w.weekIndex + 1}`).join(", ")
             await onProgress(`Exporting stats batch ${batchNum}/${totalBatches}: ${weekNames}...`)
           }
 
@@ -635,45 +666,84 @@ export async function exporterForLeague(leagueId: number, context: ExportContext
           })
 
           // Process this batch and wait for completion before moving to next batch
+          console.log(`[EA_EXPORT] Waiting for EA API responses...`)
           await Promise.all(batchDataRequests.map(request => staggeringCall(request, 50)))
+          // Log what we got from EA
+          for (const weekData of weeklyData.weeks) {
+            if (weekData.schedules?.gameScheduleInfoList) {
+              const firstGame = weekData.schedules.gameScheduleInfoList[0]
+              console.log(`[EA_EXPORT] Schedule data from EA: seasonIndex=${firstGame?.seasonIndex}, stageIndex=${firstGame?.stageIndex}, weekIndex=${firstGame?.weekIndex}`)
+            }
+          }
+          console.log(`[EA_EXPORT] Got data, saving to Firestore...`)
           await exportData(weeklyData as ExportData, contextualExports, `${leagueId}`, client.getSystemConsole())
+          console.log(`[EA_EXPORT] Weekly batch ${batchNum} saved`)
         }
       }
       if (destinations.some(e => e.rosters)) {
+        console.log(`[EA_EXPORT] Starting roster exports...`)
         if (onProgress) {
           await onProgress("Exporting team rosters (32 teams + free agents)...")
         }
+
+        // Helper to wrap roster requests with a per-batch timeout
+        const withBatchTimeout = async (promises: Promise<any>[], batchNum: number, timeoutMs: number = 120000) => {
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`Roster batch ${batchNum} timed out after ${timeoutMs/1000}s`)), timeoutMs)
+          )
+          return Promise.race([Promise.all(promises), timeoutPromise])
+        }
+
         let teamRequests = [] as Promise<any>[]
         let teamData: TeamData = { roster: {} }
         const teamList = leagueInfo.teamIdInfoList
         const totalRosterBatches = Math.ceil(teamList.length / 4)
-        teamRequests.push(client.getFreeAgents(leagueId).then(freeAgents => teamData.roster["freeagents"] = freeAgents))
+
+        console.log(`[EA_EXPORT] Fetching free agents...`)
+        teamRequests.push(client.getFreeAgents(leagueId).then(freeAgents => {
+          console.log(`[EA_EXPORT] Got free agents`)
+          teamData.roster["freeagents"] = freeAgents
+        }))
 
         for (let idx = 0; idx < teamList.length; idx++) {
           const team = teamList[idx];
           teamRequests.push(
-            client.getTeamRoster(leagueId, team.teamId, idx).then(roster =>
+            client.getTeamRoster(leagueId, team.teamId, idx).then(roster => {
+              console.log(`[EA_EXPORT] Got roster for team ${team.teamId}`)
               teamData.roster[`${team.teamId}`] = roster
-            )
+            })
           )
           if ((idx + 1) % 4 == 0) {
             const rosterBatchNum = Math.floor(idx / 4) + 1
+            console.log(`[EA_EXPORT] Waiting for roster batch ${rosterBatchNum}/${totalRosterBatches}...`)
             if (onProgress) {
               await onProgress(`Exporting rosters batch ${rosterBatchNum}/${totalRosterBatches}...`)
             }
-            await Promise.all(teamRequests)
-            await exportTeamData(teamData, contextualExports, `${leagueId}`, client.getSystemConsole())
+            try {
+              await withBatchTimeout(teamRequests, rosterBatchNum)
+              await exportTeamData(teamData, contextualExports, `${leagueId}`, client.getSystemConsole())
+              console.log(`[EA_EXPORT] Roster batch ${rosterBatchNum} saved`)
+            } catch (e) {
+              console.error(`[EA_EXPORT] Roster batch ${rosterBatchNum} failed: ${e}`)
+              // Continue with next batch instead of failing completely
+            }
             teamRequests = []
             teamData = { roster: {} }
           }
         }
         if (teamRequests.length > 0) {
-          await Promise.all(teamRequests)
-          await exportTeamData(teamData, contextualExports, `${leagueId}`, client.getSystemConsole())
+          try {
+            await withBatchTimeout(teamRequests, totalRosterBatches)
+            await exportTeamData(teamData, contextualExports, `${leagueId}`, client.getSystemConsole())
+          } catch (e) {
+            console.error(`[EA_EXPORT] Final roster batch failed: ${e}`)
+          }
           teamRequests = []
           teamData = { roster: {} }
         }
+        console.log(`[EA_EXPORT] Roster exports complete`)
       }
+      console.log(`[EA_EXPORT] exportSpecificWeeks complete!`)
     }
   } as MaddenExporter
 }

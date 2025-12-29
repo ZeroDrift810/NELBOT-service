@@ -36,7 +36,9 @@ async function handleExport(guildId: string, week: number, token: string, channe
   }
 
   try {
+    console.log(`[EXPORT] Starting export for league ${league.leagueId}...`)
     const exporter = await exporterForLeague(Number(league.leagueId), ExportContext.MANUAL)
+    console.log(`[EXPORT] Got exporter, starting export...`)
 
     if (isFullExport) {
       // For full export, send initial message and use progress callback
@@ -51,7 +53,9 @@ async function handleExport(guildId: string, week: number, token: string, channe
         content: "Exporting current week...",
         flags: 64
       })
+      console.log(`[EXPORT] Calling exportCurrentWeek...`)
       await exporter.exportCurrentWeek()
+      console.log(`[EXPORT] exportCurrentWeek completed`)
     } else {
       await client.editOriginalInteraction(token, {
         content: `Exporting week ${week}...`,

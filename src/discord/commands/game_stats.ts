@@ -25,20 +25,46 @@ export async function showGameStats(token: string, client: DiscordClient, league
     // Show team stats - away team first, then home team
     const awayTeamStats = stats.teamStats.find(ts => ts.teamId === gameResult.awayTeamId);
     const homeTeamStats = stats.teamStats.find(ts => ts.teamId === gameResult.homeTeamId);
+
+    // Enhanced box score table
+    content += `## 📊 Box Score\n`;
+    content += `\`\`\`\n`;
+    content += `           ${awayTeam?.abbrName?.padEnd(6) || 'AWAY  '} ${homeTeam?.abbrName || 'HOME'}\n`;
+    content += `Total Yds ${String(awayTeamStats?.offTotalYds || 0).padStart(5)}   ${String(homeTeamStats?.offTotalYds || 0).padStart(5)}\n`;
+    content += `Pass Yds  ${String(awayTeamStats?.offPassYds || 0).padStart(5)}   ${String(homeTeamStats?.offPassYds || 0).padStart(5)}\n`;
+    content += `Rush Yds  ${String(awayTeamStats?.offRushYds || 0).padStart(5)}   ${String(homeTeamStats?.offRushYds || 0).padStart(5)}\n`;
+    content += `1st Downs ${String(awayTeamStats?.off1stDowns || 0).padStart(5)}   ${String(homeTeamStats?.off1stDowns || 0).padStart(5)}\n`;
+    content += `Turnovers ${String(awayTeamStats?.tOGiveaways || 0).padStart(5)}   ${String(homeTeamStats?.tOGiveaways || 0).padStart(5)}\n`;
+    content += `\`\`\`\n\n`;
+
     if (awayTeamStats) {
-      content += `## ${formatTeamEmoji(logos, awayTeam?.abbrName)} ${awayTeam?.displayName} Stats\n`;
-      content += `Total Yards: ${awayTeamStats.offTotalYds} | Pass Yards: ${awayTeamStats.offPassYds} | Rush Yards: ${awayTeamStats.offRushYds}\n`;
-      content += `1st Downs: ${awayTeamStats.off1stDowns} | 3rd Down: ${awayTeamStats.off3rdDownConv}/${awayTeamStats.off3rdDownAtt} (${awayTeamStats.off3rdDownConvPct.toFixed(1)}%)\n`;
-      content += `Turnovers: ${awayTeamStats.tOGiveaways} | TO Diff: ${awayTeamStats.tODiff}\n`;
-      content += `Penalties: ${awayTeamStats.penalties} for ${awayTeamStats.penaltyYds} yards\n\n`;
+      content += `## ${formatTeamEmoji(logos, awayTeam?.abbrName)} ${awayTeam?.displayName}\n`;
+      content += `**Offense:** ${awayTeamStats.offTotalYds} yds (${awayTeamStats.offPassYds} pass, ${awayTeamStats.offRushYds} rush)\n`;
+      content += `**3rd Down:** ${awayTeamStats.off3rdDownConv}/${awayTeamStats.off3rdDownAtt} (${awayTeamStats.off3rdDownConvPct.toFixed(1)}%)`;
+      if ((awayTeamStats.off4thDownAtt || 0) > 0) {
+        content += ` | **4th Down:** ${awayTeamStats.off4thDownConv}/${awayTeamStats.off4thDownAtt}`;
+      }
+      content += `\n`;
+      if ((awayTeamStats.offRedZones || 0) > 0) {
+        content += `**Red Zone:** ${awayTeamStats.offRedZoneTDs || 0} TD, ${awayTeamStats.offRedZoneFGs || 0} FG / ${awayTeamStats.offRedZones} trips (${awayTeamStats.offRedZonePct?.toFixed(1) || 0}%)\n`;
+      }
+      content += `**Turnovers:** ${awayTeamStats.tOGiveaways} (${awayTeamStats.defIntsRec || 0} INT, ${awayTeamStats.defFumRec || 0} FUM lost) | **Sacks Allowed:** ${homeTeamStats?.defSacks || 0}\n`;
+      content += `**Penalties:** ${awayTeamStats.penalties} for ${awayTeamStats.penaltyYds} yards\n\n`;
     }
 
     if (homeTeamStats) {
-      content += `## ${formatTeamEmoji(logos, homeTeam?.abbrName)} ${homeTeam?.displayName} Stats\n`;
-      content += `Total Yards: ${homeTeamStats.offTotalYds} | Pass Yards: ${homeTeamStats.offPassYds} | Rush Yards: ${homeTeamStats.offRushYds}\n`;
-      content += `1st Downs: ${homeTeamStats.off1stDowns} | 3rd Down: ${homeTeamStats.off3rdDownConv}/${homeTeamStats.off3rdDownAtt} (${homeTeamStats.off3rdDownConvPct.toFixed(1)}%)\n`;
-      content += `Turnovers: ${homeTeamStats.tOGiveaways} | TO Diff: ${homeTeamStats.tODiff}\n`;
-      content += `Penalties: ${homeTeamStats.penalties} for ${homeTeamStats.penaltyYds} yards\n`;
+      content += `## ${formatTeamEmoji(logos, homeTeam?.abbrName)} ${homeTeam?.displayName}\n`;
+      content += `**Offense:** ${homeTeamStats.offTotalYds} yds (${homeTeamStats.offPassYds} pass, ${homeTeamStats.offRushYds} rush)\n`;
+      content += `**3rd Down:** ${homeTeamStats.off3rdDownConv}/${homeTeamStats.off3rdDownAtt} (${homeTeamStats.off3rdDownConvPct.toFixed(1)}%)`;
+      if ((homeTeamStats.off4thDownAtt || 0) > 0) {
+        content += ` | **4th Down:** ${homeTeamStats.off4thDownConv}/${homeTeamStats.off4thDownAtt}`;
+      }
+      content += `\n`;
+      if ((homeTeamStats.offRedZones || 0) > 0) {
+        content += `**Red Zone:** ${homeTeamStats.offRedZoneTDs || 0} TD, ${homeTeamStats.offRedZoneFGs || 0} FG / ${homeTeamStats.offRedZones} trips (${homeTeamStats.offRedZonePct?.toFixed(1) || 0}%)\n`;
+      }
+      content += `**Turnovers:** ${homeTeamStats.tOGiveaways} (${homeTeamStats.defIntsRec || 0} INT, ${homeTeamStats.defFumRec || 0} FUM lost) | **Sacks Allowed:** ${awayTeamStats?.defSacks || 0}\n`;
+      content += `**Penalties:** ${homeTeamStats.penalties} for ${homeTeamStats.penaltyYds} yards\n`;
     }
   }
   else if (selection === GameStatsOptions.AWAY_PLAYER_STATS) {
@@ -71,9 +97,11 @@ export async function showGameStats(token: string, client: DiscordClient, league
       awayRushing.forEach(p => {
         const statParts = [];
         if (p.rushAtt > 0) statParts.push(`${p.rushAtt} ATT`);
-        if (p.rushYds !== 0) statParts.push(`${p.rushYds} YDS`); // Allow negative yards
+        if (p.rushYds !== 0) statParts.push(`${p.rushYds} YDS`);
         if (p.rushTDs > 0) statParts.push(`${p.rushTDs} TD`);
         if (p.rushYdsPerAtt !== 0) statParts.push(`${p.rushYdsPerAtt.toFixed(1)} AVG`);
+        if ((p.rushBrokenTackles || 0) > 0) statParts.push(`${p.rushBrokenTackles} BT`);
+        if ((p.rush20PlusYds || 0) > 0) statParts.push(`${p.rush20PlusYds} 20+`);
 
         if (statParts.length > 0) {
           content += `${p.fullName}: ${statParts.join(', ')}\n`;
@@ -89,9 +117,11 @@ export async function showGameStats(token: string, client: DiscordClient, league
       awayReceiving.forEach(p => {
         const statParts = [];
         if (p.recCatches > 0) statParts.push(`${p.recCatches} REC`);
-        if (p.recYds !== 0) statParts.push(`${p.recYds} YDS`); // Allow negative yards
+        if (p.recYds !== 0) statParts.push(`${p.recYds} YDS`);
         if (p.recTDs > 0) statParts.push(`${p.recTDs} TD`);
         if (p.recYdsPerCatch !== 0 && p.recCatches > 0) statParts.push(`${p.recYdsPerCatch.toFixed(1)} AVG`);
+        if ((p.recYdsAfterCatch || 0) > 0) statParts.push(`${p.recYdsAfterCatch} YAC`);
+        if ((p.recDrops || 0) > 0) statParts.push(`${p.recDrops} DROP`);
 
         if (statParts.length > 0) {
           content += `${p.fullName}: ${statParts.join(', ')}\n`;
@@ -108,7 +138,12 @@ export async function showGameStats(token: string, client: DiscordClient, league
         const statParts = [];
         if (p.defTotalTackles > 0) statParts.push(`${p.defTotalTackles} TKL`);
         if (p.defSacks > 0) statParts.push(`${p.defSacks} SCK`);
-        if (p.defInts > 0) statParts.push(`${p.defInts} INT`);
+        if (p.defInts > 0) {
+          const retYds = p.defIntReturnYds || 0;
+          statParts.push(`${p.defInts} INT${retYds > 0 ? ` (${retYds} ret)` : ''}`);
+        }
+        if ((p.defDeflections || 0) > 0) statParts.push(`${p.defDeflections} PD`);
+        if (p.defForcedFum > 0) statParts.push(`${p.defForcedFum} FF`);
         if (p.defFumRec > 0) statParts.push(`${p.defFumRec} FR`);
         if (p.defTDs > 0) statParts.push(`${p.defTDs} TD`);
         if (p.defSafeties > 0) statParts.push(`${p.defSafeties} SAF`);
@@ -185,9 +220,11 @@ export async function showGameStats(token: string, client: DiscordClient, league
       homeRushing.forEach(p => {
         const statParts = [];
         if (p.rushAtt > 0) statParts.push(`${p.rushAtt} ATT`);
-        if (p.rushYds !== 0) statParts.push(`${p.rushYds} YDS`); // Allow negative yards
+        if (p.rushYds !== 0) statParts.push(`${p.rushYds} YDS`);
         if (p.rushTDs > 0) statParts.push(`${p.rushTDs} TD`);
         if (p.rushYdsPerAtt !== 0) statParts.push(`${p.rushYdsPerAtt.toFixed(1)} AVG`);
+        if ((p.rushBrokenTackles || 0) > 0) statParts.push(`${p.rushBrokenTackles} BT`);
+        if ((p.rush20PlusYds || 0) > 0) statParts.push(`${p.rush20PlusYds} 20+`);
 
         if (statParts.length > 0) {
           content += `${p.fullName}: ${statParts.join(', ')}\n`;
@@ -203,9 +240,11 @@ export async function showGameStats(token: string, client: DiscordClient, league
       homeReceiving.forEach(p => {
         const statParts = [];
         if (p.recCatches > 0) statParts.push(`${p.recCatches} REC`);
-        if (p.recYds !== 0) statParts.push(`${p.recYds} YDS`); // Allow negative yards
+        if (p.recYds !== 0) statParts.push(`${p.recYds} YDS`);
         if (p.recTDs > 0) statParts.push(`${p.recTDs} TD`);
         if (p.recYdsPerCatch !== 0 && p.recCatches > 0) statParts.push(`${p.recYdsPerCatch.toFixed(1)} AVG`);
+        if ((p.recYdsAfterCatch || 0) > 0) statParts.push(`${p.recYdsAfterCatch} YAC`);
+        if ((p.recDrops || 0) > 0) statParts.push(`${p.recDrops} DROP`);
 
         if (statParts.length > 0) {
           content += `${p.fullName}: ${statParts.join(', ')}\n`;
@@ -222,7 +261,12 @@ export async function showGameStats(token: string, client: DiscordClient, league
         const statParts = [];
         if (p.defTotalTackles > 0) statParts.push(`${p.defTotalTackles} TKL`);
         if (p.defSacks > 0) statParts.push(`${p.defSacks} SCK`);
-        if (p.defInts > 0) statParts.push(`${p.defInts} INT`);
+        if (p.defInts > 0) {
+          const retYds = p.defIntReturnYds || 0;
+          statParts.push(`${p.defInts} INT${retYds > 0 ? ` (${retYds} ret)` : ''}`);
+        }
+        if ((p.defDeflections || 0) > 0) statParts.push(`${p.defDeflections} PD`);
+        if (p.defForcedFum > 0) statParts.push(`${p.defForcedFum} FF`);
         if (p.defFumRec > 0) statParts.push(`${p.defFumRec} FR`);
         if (p.defTDs > 0) statParts.push(`${p.defTDs} TD`);
         if (p.defSafeties > 0) statParts.push(`${p.defSafeties} SAF`);

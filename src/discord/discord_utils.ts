@@ -81,6 +81,7 @@ export interface DiscordClient {
   editOriginalInteraction(token: string, body: { [key: string]: any }): Promise<void>,
   editOriginalInteractionWithForm(token: string, body: FormData): Promise<void>,
   createMessage(channel: ChannelId, content: string, allowedMentions: string[]): Promise<MessageId>,
+  createMessageWithComponents(channel: ChannelId, body: { [key: string]: any }): Promise<MessageId>,
   createMessageWithForm(channel: ChannelId, formData: FormData): Promise<MessageId>,
   editMessage(channel: ChannelId, messageId: MessageId, content: string, allowedMentions: string[]): Promise<void>,
   deleteMessage(channel: ChannelId, messageId: MessageId): Promise<void>,
@@ -253,6 +254,28 @@ export function createClient(settings: DiscordSettings): DiscordClient {
             throw new SnallabotDiscordError(e, `Snallabot cannot delete message, it may have been deleted? Full discord error ${e.message}`)
           } else if (e.code === UNKNOWN_CHANNEL) {
             throw new SnallabotDiscordError(e, `Snallabot cannot delete message in channel because the channel (<#${channel.id}>) may have been deleted? Full discord error: ${e.message}`)
+          }
+        }
+        throw e
+      }
+    },
+    createMessageWithComponents: async (channel: ChannelId, body: { [key: string]: any }): Promise<MessageId> => {
+      try {
+        const res = await sendDiscordRequest(`channels/${channel.id}/messages`, {
+          method: "POST",
+          body
+        })
+        const message = await res.json() as APIMessage
+        return {
+          id: message.id, id_type: DiscordIdType.MESSAGE
+        }
+      }
+      catch (e) {
+        if (e instanceof DiscordRequestError) {
+          if (e.isPermissionError()) {
+            throw new SnallabotDiscordError(e, `Snallabot does not have permission to create a message in <#${channel.id}>`)
+          } else if (e.code === UNKNOWN_CHANNEL) {
+            throw new SnallabotDiscordError(e, `Cannot post to channel (<#${channel.id}>) - it may have been deleted? Full discord error: ${e.message}`)
           }
         }
         throw e
@@ -752,6 +775,37 @@ export function formatTeamEmoji(leagueCustomLogos: LeagueLogos, teamAbbr?: strin
     return getTeamEmoji(teamAbbr, leagueCustomLogos)
   }
   return SnallabotTeamEmojis.NFL
+}
+
+// Dev Trait Emojis
+export enum SnallabotDevEmojis {
+  NORMAL = "<:snallabot_normal_dev:1450281729825833104>",
+  STAR = "<:snallabot_star_dev:1450281736020820222>",
+  SUPERSTAR = "<:snallabot_superstar_dev:1450281741171425313>",
+  XFACTOR = "<:snallabot_xfactor_dev:1450281747152371944>",
+  HIDDEN = "<:snallabot_hidden_dev:1450281724855713882>"
+}
+
+export function getDevTraitEmoji(devTrait: number, yearsPro?: number): string {
+  // Show hidden for rookies (yearsPro === 0)
+  if (yearsPro === 0) return SnallabotDevEmojis.HIDDEN
+
+  switch (devTrait) {
+    case 0: return SnallabotDevEmojis.NORMAL
+    case 1: return SnallabotDevEmojis.STAR
+    case 2: return SnallabotDevEmojis.SUPERSTAR
+    case 3: return SnallabotDevEmojis.XFACTOR
+    default: return SnallabotDevEmojis.NORMAL
+  }
+}
+
+// Status Emojis
+export enum SnallabotStatusEmojis {
+  WIN = "<:snallabot_win:1368708001548079304>",
+  LOSS = "<:snallabot_loss:1368726069963653171>",
+  TIE = "<:snallabot_tie:1368713402016337950>",
+  YES = "<:snallabot_yes:1368090206867030056>",
+  NO = "<:snallabot_nope:1368090205525115030>"
 }
 
 export function formatGame(game: MaddenGame, teams: TeamList, leagueCustomLogos: LeagueLogos) {

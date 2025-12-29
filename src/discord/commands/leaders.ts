@@ -22,7 +22,8 @@ async function formatLeaders(client: DiscordClient, token: string, leagueId: str
     message += `## 🎯 Passing Leaders\n`
     topPassers.forEach((stat, idx) => {
       const team = teams.getTeamForId(stat.teamId)
-      message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.passYds} YDS, ${stat.passTDs} TD, ${stat.passInts} INT, ${stat.passCompPct.toFixed(1)}% Comp\n`
+      const rating = stat.passerRating?.toFixed(1) || '0.0'
+      message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.passYds} YDS, ${stat.passTDs} TD, ${stat.passInts} INT, ${stat.passCompPct.toFixed(1)}%, ${rating} RTG\n`
     })
     message += `\n`
   }
@@ -37,7 +38,9 @@ async function formatLeaders(client: DiscordClient, token: string, leagueId: str
     topRushers.forEach((stat, idx) => {
       const team = teams.getTeamForId(stat.teamId)
       const ypc = stat.rushAtt > 0 ? (stat.rushYds / stat.rushAtt).toFixed(1) : '0.0'
-      message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.rushYds} YDS, ${stat.rushTDs} TD, ${stat.rushAtt} ATT, ${ypc} YPC\n`
+      const bt = stat.rushBrokenTackles || 0
+      const explosive = stat.rush20PlusYds || 0
+      message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.rushYds} YDS, ${stat.rushTDs} TD, ${ypc} YPC, ${bt} BT, ${explosive} 20+\n`
     })
     message += `\n`
   }
@@ -51,7 +54,9 @@ async function formatLeaders(client: DiscordClient, token: string, leagueId: str
     message += `## 🙌 Receiving Leaders\n`
     topReceivers.forEach((stat, idx) => {
       const team = teams.getTeamForId(stat.teamId)
-      message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.recYds} YDS, ${stat.recTDs} TD, ${stat.recCatches} Catches, ${stat.recLongest} Long\n`
+      const yac = stat.recYdsAfterCatch || 0
+      const drops = stat.recDrops || 0
+      message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.recYds} YDS, ${stat.recTDs} TD, ${stat.recCatches} REC, ${yac} YAC, ${drops} DROP\n`
     })
     message += `\n`
   }
@@ -65,9 +70,48 @@ async function formatLeaders(client: DiscordClient, token: string, leagueId: str
     message += `## 🛡️ Defensive Leaders (Tackles)\n`
     topDefenders.forEach((stat, idx) => {
       const team = teams.getTeamForId(stat.teamId)
-      message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.defTotalTackles} Total, ${stat.defSacks} Sacks, ${stat.defInts} INT, ${stat.defForcedFum} FF\n`
+      const pd = stat.defDeflections || 0
+      message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.defTotalTackles} TKL, ${stat.defSacks} SCK, ${stat.defInts} INT, ${stat.defForcedFum} FF, ${pd} PD\n`
     })
     message += `\n`
+  }
+
+  if (category === "sacks" || category === "all") {
+    const defensiveStats = (weeklyStats[PlayerStatType.DEFENSE] || []) as DefensiveStats[]
+    const topSackers = defensiveStats
+      .filter(s => s.defSacks > 0)
+      .sort((a, b) => b.defSacks - a.defSacks)
+      .slice(0, 10)
+
+    if (topSackers.length > 0) {
+      message += `## 💥 Sack Leaders\n`
+      topSackers.forEach((stat, idx) => {
+        const team = teams.getTeamForId(stat.teamId)
+        const ff = stat.defForcedFum || 0
+        message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.defSacks} SACKS, ${stat.defTotalTackles} TKL, ${ff} FF\n`
+      })
+      message += `\n`
+    }
+  }
+
+  if (category === "interceptions" || category === "all") {
+    const defensiveStats = (weeklyStats[PlayerStatType.DEFENSE] || []) as DefensiveStats[]
+    const topBallHawks = defensiveStats
+      .filter(s => s.defInts > 0)
+      .sort((a, b) => b.defInts - a.defInts)
+      .slice(0, 10)
+
+    if (topBallHawks.length > 0) {
+      message += `## 🦅 Interception Leaders\n`
+      topBallHawks.forEach((stat, idx) => {
+        const team = teams.getTeamForId(stat.teamId)
+        const retYds = stat.defIntReturnYds || 0
+        const pd = stat.defDeflections || 0
+        const td = stat.defTDs || 0
+        message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.defInts} INT, ${retYds} RET YDS, ${pd} PD${td > 0 ? `, ${td} TD` : ''}\n`
+      })
+      message += `\n`
+    }
   }
 
   if (category === "kicking" || category === "all") {
@@ -81,9 +125,83 @@ async function formatLeaders(client: DiscordClient, token: string, leagueId: str
     topKickers.forEach((stat, idx) => {
       const team = teams.getTeamForId(stat.teamId)
       const fgPct = stat.fGAtt > 0 ? ((stat.fGMade / stat.fGAtt) * 100).toFixed(1) : '0.0'
-      message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.fGMade}/${stat.fGAtt} FG (${fgPct}%), Long: ${stat.fGLongest}, XP: ${stat.xPMade}/${stat.xPAtt}\n`
+      const fg50 = `${stat.fG50PlusMade || 0}/${stat.fG50PlusAtt || 0}`
+      message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.fGMade}/${stat.fGAtt} FG (${fgPct}%), 50+: ${fg50}, Long: ${stat.fGLongest}\n`
     })
     message += `\n`
+  }
+
+  if (category === "punting" || category === "all") {
+    const puntingStats = (weeklyStats[PlayerStatType.PUNTING] || []) as PuntingStats[]
+    const topPunters = puntingStats
+      .filter(p => p.puntAtt > 0)
+      .sort((a, b) => b.puntYdsPerAtt - a.puntYdsPerAtt)
+      .slice(0, 5)
+
+    if (topPunters.length > 0) {
+      message += `## 🏈 Punting Leaders\n`
+      topPunters.forEach((stat, idx) => {
+        const team = teams.getTeamForId(stat.teamId)
+        const avg = stat.puntYdsPerAtt?.toFixed(1) || '0.0'
+        const netAvg = stat.puntNetYdsPerAtt?.toFixed(1) || '0.0'
+        const in20 = stat.puntsIn20 || 0
+        message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.puntAtt} Punts, ${avg} AVG, ${netAvg} NET, ${in20} IN20\n`
+      })
+      message += `\n`
+    }
+  }
+
+  // Advanced stats category
+  if (category === "advanced") {
+    const rushingStats = (weeklyStats[PlayerStatType.RUSHING] || []) as RushingStats[]
+    const receivingStats = (weeklyStats[PlayerStatType.RECEIVING] || []) as ReceivingStats[]
+
+    // Broken Tackles leaders
+    const btLeaders = rushingStats
+      .filter(s => (s.rushBrokenTackles || 0) > 0)
+      .sort((a, b) => (b.rushBrokenTackles || 0) - (a.rushBrokenTackles || 0))
+      .slice(0, 5)
+
+    if (btLeaders.length > 0) {
+      message += `## 💪 Broken Tackles Leaders\n`
+      btLeaders.forEach((stat, idx) => {
+        const team = teams.getTeamForId(stat.teamId)
+        const yac = stat.rushYdsAfterContact || 0
+        message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.rushBrokenTackles} BT, ${yac} YAC, ${stat.rushYds} YDS\n`
+      })
+      message += `\n`
+    }
+
+    // YAC leaders (receiving)
+    const yacLeaders = receivingStats
+      .filter(s => (s.recYdsAfterCatch || 0) > 0)
+      .sort((a, b) => (b.recYdsAfterCatch || 0) - (a.recYdsAfterCatch || 0))
+      .slice(0, 5)
+
+    if (yacLeaders.length > 0) {
+      message += `## 🚀 Yards After Catch Leaders\n`
+      yacLeaders.forEach((stat, idx) => {
+        const team = teams.getTeamForId(stat.teamId)
+        const yacPerCatch = stat.recCatches > 0 ? ((stat.recYdsAfterCatch || 0) / stat.recCatches).toFixed(1) : '0.0'
+        message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.recYdsAfterCatch} YAC, ${yacPerCatch} YAC/REC, ${stat.recCatches} REC\n`
+      })
+      message += `\n`
+    }
+
+    // Explosive plays (20+ yard rushes)
+    const explosiveRushers = rushingStats
+      .filter(s => (s.rush20PlusYds || 0) > 0)
+      .sort((a, b) => (b.rush20PlusYds || 0) - (a.rush20PlusYds || 0))
+      .slice(0, 5)
+
+    if (explosiveRushers.length > 0) {
+      message += `## ⚡ Explosive Rushers (20+ YD Runs)\n`
+      explosiveRushers.forEach((stat, idx) => {
+        const team = teams.getTeamForId(stat.teamId)
+        message += `${idx + 1}. **${stat.fullName}** (${team?.abbrName || 'FA'}) - ${stat.rush20PlusYds} runs of 20+, Long: ${stat.rushLongest}\n`
+      })
+      message += `\n`
+    }
   }
 
   await client.editOriginalInteraction(token, { content: message })
@@ -146,8 +264,12 @@ export default {
             { name: "Passing", value: "passing" },
             { name: "Rushing", value: "rushing" },
             { name: "Receiving", value: "receiving" },
-            { name: "Defense", value: "defense" },
-            { name: "Kicking", value: "kicking" }
+            { name: "Defense (Tackles)", value: "defense" },
+            { name: "Sack Leaders", value: "sacks" },
+            { name: "Interception Leaders", value: "interceptions" },
+            { name: "Kicking", value: "kicking" },
+            { name: "Punting", value: "punting" },
+            { name: "Advanced Stats", value: "advanced" }
           ]
         }
       ]
