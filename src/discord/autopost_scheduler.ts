@@ -16,22 +16,35 @@ import AwardsDB, { getAwardLabel, getAwardEmoji, getAllAwardTypes } from "../db/
 
 let schedulerInterval: NodeJS.Timeout | null = null
 let discordClient: DiscordClient | null = null
+let isStarting = false  // Prevent race condition during startup
 
 // Start the scheduler
 export function startAutoPostScheduler(client: DiscordClient) {
+  // Prevent double-start race condition
+  if (isStarting) {
+    console.log("⏰ Auto-post scheduler start already in progress")
+    return
+  }
+
   if (schedulerInterval) {
     console.log("⏰ Auto-post scheduler already running")
     return
   }
 
-  discordClient = client
-  console.log("⏰ Starting auto-post scheduler (checking every minute)")
+  isStarting = true
 
-  // Run immediately on start
-  checkAndRunDuePosts()
+  try {
+    discordClient = client
+    console.log("⏰ Starting auto-post scheduler (checking every minute)")
 
-  // Then run every minute
-  schedulerInterval = setInterval(checkAndRunDuePosts, 60 * 1000)
+    // Run immediately on start
+    checkAndRunDuePosts()
+
+    // Then run every minute
+    schedulerInterval = setInterval(checkAndRunDuePosts, 60 * 1000)
+  } finally {
+    isStarting = false
+  }
 }
 
 // Stop the scheduler

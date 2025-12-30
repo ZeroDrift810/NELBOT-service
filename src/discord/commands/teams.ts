@@ -207,7 +207,9 @@ export default {
         const message = await fetchTeamsMessage(leagueSettings)
         try {
           await client.deleteMessage(oldChannelId, oldMessageId || { id: "", id_type: DiscordIdType.MESSAGE })
-        } catch (e) { }
+        } catch (e) {
+          console.warn(`⚠️ Could not delete old teams message from channel ${oldChannelId.id}:`, e)
+        }
         const newMessageId = await client.createMessage(channel, message, [])
         await LeagueSettingsDB.updateTeamConfiguration(guild_id, {
           channel: channel,
@@ -234,7 +236,7 @@ export default {
             }
             return
           } catch (e) {
-            console.debug(e)
+            console.warn(`⚠️ Could not verify or update existing teams message:`, e)
           }
         }
         const message = await fetchTeamsMessage(leagueSettings)
@@ -393,8 +395,16 @@ export default {
 
       respond(ctx, deferMessage())
       // Don't await - let it run in background and update via token
-      handleCustomLogo(guild_id, leagueId, client, command.token, url, teamToCustomize).catch(err => {
+      handleCustomLogo(guild_id, leagueId, client, command.token, url, teamToCustomize).catch(async err => {
         console.error('❌ Error in handleCustomLogo:', err);
+        // Notify user of the failure
+        try {
+          await client.editOriginalInteraction(command.token, {
+            content: `❌ Failed to customize logo for ${teamToCustomize.displayName}: ${err.message || 'Unknown error'}`
+          });
+        } catch (notifyErr) {
+          console.error('❌ Could not notify user of logo error:', notifyErr);
+        }
       });
       return
     }

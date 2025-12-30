@@ -12,9 +12,14 @@ import createNotifier from "../notifier"
 import { ExportContext, Stage, exporterForLeague, EAAccountError } from "../../dashboard/ea_client"
 import { LeagueLogos, leagueLogosView } from "../../db/view"
 
-// Webhook configuration for NEL Utility Bot companion messages
-const UTILITY_BOT_WEBHOOK_URL = process.env.UTILITY_BOT_WEBHOOK_URL || 'http://localhost:3002/api/game-channel-created'
-const UTILITY_BOT_WEBHOOK_SECRET = process.env.UTILITY_BOT_WEBHOOK_SECRET || 'your-secret-key-change-this'
+// Webhook configuration for NEL Utility Bot companion messages - secrets must be set via env vars
+const UTILITY_BOT_WEBHOOK_URL = process.env.UTILITY_BOT_WEBHOOK_URL;
+const UTILITY_BOT_WEBHOOK_SECRET = process.env.UTILITY_BOT_WEBHOOK_SECRET;
+
+// Warn if webhook is not configured (but don't crash - it's optional)
+if (!UTILITY_BOT_WEBHOOK_URL || !UTILITY_BOT_WEBHOOK_SECRET) {
+  console.warn('[WEBHOOK] Utility Bot webhook not configured - game channel notifications disabled. Set UTILITY_BOT_WEBHOOK_URL and UTILITY_BOT_WEBHOOK_SECRET env vars to enable.');
+}
 
 // Send webhook to NEL Utility Bot when game channel is created
 async function sendGameChannelWebhook(data: {
@@ -29,22 +34,39 @@ async function sendGameChannelWebhook(data: {
   home_user_id?: string,
   away_user_id?: string
 }) {
+  // Skip if webhook not configured
+  if (!UTILITY_BOT_WEBHOOK_URL || !UTILITY_BOT_WEBHOOK_SECRET) {
+    return
+  }
+
   try {
+    // Add timeout to prevent hanging
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 second timeout
+
     const response = await fetch(UTILITY_BOT_WEBHOOK_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${UTILITY_BOT_WEBHOOK_SECRET}`
       },
-      body: JSON.stringify(data)
+      body: JSON.stringify(data),
+      signal: controller.signal
     })
+
+    clearTimeout(timeoutId)
+
     if (response.ok) {
       console.log(`✅ Webhook sent for game channel ${data.away_team} @ ${data.home_team}`)
     } else {
       console.warn(`⚠️ Webhook failed for game channel: ${response.status}`)
     }
   } catch (error) {
-    console.warn(`⚠️ Could not send game channel webhook:`, error)
+    if (error instanceof Error && error.name === 'AbortError') {
+      console.warn(`⚠️ Game channel webhook timed out after 10 seconds`)
+    } else {
+      console.warn(`⚠️ Could not send game channel webhook:`, error)
+    }
     // Don't throw - webhook failure shouldn't break channel creation
   }
 }

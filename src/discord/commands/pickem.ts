@@ -12,6 +12,14 @@ import { TeamGameData } from "./powerrankings_engine"
 import PickemDB from "../pickem_db"
 import db from "../../db/firebase"
 
+// Admin role ID for lock/unlock commands
+const ADMIN_ROLE_ID = "1451132365370818624"
+
+// Helper to check if user has admin role
+function hasAdminRole(memberRoles: string[]): boolean {
+  return memberRoles.includes(ADMIN_ROLE_ID)
+}
+
 // Helper to get schedule for regular season (stageIndex=1) from latest season
 async function getWeekScheduleAnyStage(leagueId: string, week: number) {
   // Query for regular season games only (stageIndex=1)
@@ -391,12 +399,39 @@ at
     // Build dropdown components (max 5 ActionRows: 4 for games + 1 for navigation)
     const components: any[] = []
 
+    // Helper to parse emoji string like "<:nel_phi:1454300857582747711>" into object { id, name }
+    const parseEmoji = (emojiStr: string) => {
+      const match = emojiStr.match(/<:(\w+):(\d+)>/)
+      if (match) {
+        return { name: match[1], id: match[2] }
+      }
+      return null
+    }
+
     for (const game of pageGames) {
       const homeTeam = teams.getTeamForId(game.homeTeamId)
       const awayTeam = teams.getTeamForId(game.awayTeamId)
-      const homeEmoji = formatTeamEmoji(logos, homeTeam.abbrName)
-      const awayEmoji = formatTeamEmoji(logos, awayTeam.abbrName)
+      const homeEmojiStr = formatTeamEmoji(logos, homeTeam.abbrName)
+      const awayEmojiStr = formatTeamEmoji(logos, awayTeam.abbrName)
+      const homeEmoji = parseEmoji(homeEmojiStr)
+      const awayEmoji = parseEmoji(awayEmojiStr)
       const userPick = userPicksMap.get(game.scheduleId)
+
+      const awayOption: any = {
+        label: `${awayTeam.displayName} (Away)`,
+        value: game.awayTeamId.toString(),
+        description: `Pick ${awayTeam.abbrName} to win`,
+        default: userPick === game.awayTeamId
+      }
+      if (awayEmoji) awayOption.emoji = awayEmoji
+
+      const homeOption: any = {
+        label: `${homeTeam.displayName} (Home)`,
+        value: game.homeTeamId.toString(),
+        description: `Pick ${homeTeam.abbrName} to win`,
+        default: userPick === game.homeTeamId
+      }
+      if (homeEmoji) homeOption.emoji = homeEmoji
 
       components.push({
         type: ComponentType.ActionRow,
@@ -414,20 +449,7 @@ at
               p: currentPage
             }),
             placeholder: `Pick winner: ${awayTeam.abbrName} @ ${homeTeam.abbrName}`,
-            options: [
-              {
-                label: `${awayEmoji} ${awayTeam.displayName} (Away)`,
-                value: game.awayTeamId.toString(),
-                description: `Pick ${awayTeam.abbrName} to win`,
-                default: userPick === game.awayTeamId
-              },
-              {
-                label: `${homeEmoji} ${homeTeam.displayName} (Home)`,
-                value: game.homeTeamId.toString(),
-                description: `Pick ${homeTeam.abbrName} to win`,
-                default: userPick === game.homeTeamId
-              }
-            ]
+            options: [awayOption, homeOption]
           }
         ]
       })
@@ -634,6 +656,21 @@ export default {
       // Lock picks for a week (commissioners only)
       ;(async () => {
         try {
+          // Authorization check - require admin role
+          const memberRoles = member.roles || []
+          if (!hasAdminRole(memberRoles)) {
+            await client.editOriginalInteraction(command.token, {
+              flags: 32768,
+              components: [
+                {
+                  type: ComponentType.TextDisplay,
+                  content: `# 🔒 Access Denied\n\nYou need the <@&${ADMIN_ROLE_ID}> role to lock pick'em weeks.`
+                }
+              ]
+            })
+            return
+          }
+
           const weekOption = subCommand?.options?.find((o: any) => o.name === 'week')
 
           // Get current week if not specified
@@ -687,6 +724,21 @@ export default {
       // Unlock picks for a week (commissioners only)
       ;(async () => {
         try {
+          // Authorization check - require admin role
+          const memberRoles = member.roles || []
+          if (!hasAdminRole(memberRoles)) {
+            await client.editOriginalInteraction(command.token, {
+              flags: 32768,
+              components: [
+                {
+                  type: ComponentType.TextDisplay,
+                  content: `# 🔓 Access Denied\n\nYou need the <@&${ADMIN_ROLE_ID}> role to unlock pick'em weeks.`
+                }
+              ]
+            })
+            return
+          }
+
           const weekOption = subCommand?.options?.find((o: any) => o.name === 'week')
 
           // Get current week if not specified

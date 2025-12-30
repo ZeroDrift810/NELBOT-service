@@ -168,11 +168,36 @@ interface PickemDB {
   ): Promise<boolean>
 }
 
+// Validate Discord snowflake IDs (17-20 digit numbers)
+function isValidDiscordId(id: string): boolean {
+  return /^\d{17,20}$/.test(id)
+}
+
+// Validate league ID (numeric string)
+function isValidLeagueId(id: string): boolean {
+  return /^\d+$/.test(id)
+}
+
+// Validate and sanitize inputs for document keys
+function validateDocKeyInputs(guildId: string, leagueId: string, userId?: string): void {
+  if (!isValidDiscordId(guildId)) {
+    throw new Error(`Invalid guild ID format: ${guildId.substring(0, 30)}`)
+  }
+  if (!isValidLeagueId(leagueId)) {
+    throw new Error(`Invalid league ID format: ${leagueId.substring(0, 30)}`)
+  }
+  if (userId && !isValidDiscordId(userId)) {
+    throw new Error(`Invalid user ID format: ${userId.substring(0, 30)}`)
+  }
+}
+
 function createWeekKey(guildId: string, leagueId: string, seasonIndex: number, weekIndex: number): string {
+  validateDocKeyInputs(guildId, leagueId)
   return `${guildId}_${leagueId}_s${seasonIndex}_w${weekIndex}`
 }
 
 function createUserStatsKey(guildId: string, leagueId: string, seasonIndex: number, userId: string): string {
+  validateDocKeyInputs(guildId, leagueId, userId)
   return `${guildId}_${leagueId}_s${seasonIndex}_${userId}`
 }
 
@@ -260,7 +285,7 @@ const PickemDB: PickemDB = {
   ): Promise<UserPick[] | null> {
     const weekData = await this.getWeekPredictions(guildId, leagueId, seasonIndex, weekIndex)
 
-    if (!weekData || !weekData.userPicks[userId]) {
+    if (!weekData || !weekData.userPicks || !weekData.userPicks[userId]) {
       return null
     }
 
@@ -314,20 +339,45 @@ const PickemDB: PickemDB = {
     seasonIndex: number,
     weekIndex: number
   ): Promise<void> {
-    const weekData = await this.getWeekPredictions(guildId, leagueId, seasonIndex, weekIndex)
+    const weekKey = createWeekKey(guildId, leagueId, seasonIndex, weekIndex)
+    const weekRef = db.collection('pickem_weeks').doc(weekKey)
 
-    if (!weekData || !weekData.gameResults) {
-      console.warn(`Cannot score week ${weekIndex} - no game results available`)
+    // Use transaction to prevent race condition on scoring
+    const weekData = await db.runTransaction(async (transaction) => {
+      const weekDoc = await transaction.get(weekRef)
+
+      if (!weekDoc.exists) {
+        console.warn(`Cannot score week ${weekIndex} - no week data found`)
+        return null
+      }
+
+      const data = weekDoc.data() as WeekPredictions
+
+      if (!data.gameResults) {
+        console.warn(`Cannot score week ${weekIndex} - no game results available`)
+        return null
+      }
+
+      // Check if already scored (idempotency) - within transaction
+      if (data.scoredAt) {
+        console.log(`Week ${weekIndex} already scored at ${data.scoredAt}. Skipping.`)
+        return null
+      }
+
+      // Mark as scored within the same transaction to prevent race condition
+      transaction.update(weekRef, {
+        scoredAt: FieldValue.serverTimestamp()
+      })
+
+      return data
+    })
+
+    // Exit if transaction determined no scoring needed
+    if (!weekData) {
       return
     }
 
-    // MAJOR FIX: Check if already scored (idempotency)
-    if (weekData.scoredAt) {
-      console.log(`Week ${weekIndex} already scored at ${weekData.scoredAt}. Skipping.`)
-      return
-    }
-
-    const gameResults = weekData.gameResults
+    const gameResults = weekData.gameResults!
     const userPicks = weekData.userPicks
 
     // MAJOR FIX: Collect all updates to execute in parallel
@@ -404,14 +454,10 @@ const PickemDB: PickemDB = {
       updatePromises.push(updateStatsPromise)
     }
 
-    // MAJOR FIX: Execute all updates in parallel
+    // Execute all user stats updates in parallel
     await Promise.all(updatePromises)
 
-    // Mark week as scored
-    const weekKey = createWeekKey(guildId, leagueId, seasonIndex, weekIndex)
-    await db.collection('pickem_weeks').doc(weekKey).update({
-      scoredAt: FieldValue.serverTimestamp()
-    })
+    // scoredAt is now marked in the transaction above to prevent race conditions
   },
 
   async getUserSeasonStats(

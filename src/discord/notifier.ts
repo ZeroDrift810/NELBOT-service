@@ -1,11 +1,11 @@
 import EventDB, { EventDelivery, SnallabotEvent } from "../db/events_db"
-import { DiscordClient, formatTeamMessageName, SnallabotDiscordError, SnallabotReactions } from "./discord_utils"
+import { DiscordClient, formatTeamMessageName, SnallabotDiscordError, SnallabotReactions, getTeamOrThrow } from "./discord_utils"
 import LeagueSettingsDB, { ChannelId, GameChannel, GameChannelState, LeagueSettings, MessageId, TeamAssignments, UserId } from "./settings_db"
 import createLogger from "./logging"
-import MaddenDB from "../db/madden_db"
+import MaddenDB, { TeamList } from "../db/madden_db"
 import { ConfirmedSimV2, SimResult } from "../db/events"
 import { ExportContext, Stage, exporterForLeague } from "../dashboard/ea_client"
-import { GameResult } from "../export/madden_league_types"
+import { GameResult, MaddenGame } from "../export/madden_league_types"
 
 interface SnallabotNotifier {
   update(currentState: GameChannel, season: number, week: number,): Promise<void>
@@ -40,7 +40,7 @@ function createNotifier(client: DiscordClient, guildId: string, settings: League
     try {
       return client.getUsersReacted(`${reaction}`, messageId, channelId)
     } catch (e) {
-
+      console.error(`❌ Failed to get users reacted with ${reaction} on message ${messageId.id}:`, e)
       throw e
     }
   }
@@ -60,8 +60,10 @@ function createNotifier(client: DiscordClient, guildId: string, settings: League
     const teams = await MaddenDB.getLatestTeams(leagueId)
     const latestAssignents = teams.getLatestTeamAssignments(assignments)
     const game = await MaddenDB.getGameForSchedule(leagueId, gameChannel.scheduleId, week, season)
-    const awayTeamId = teams.getTeamForId(game.awayTeamId).teamId
-    const homeTeamId = teams.getTeamForId(game.homeTeamId).teamId
+    const awayTeam = getTeamOrThrow(teams, game.awayTeamId)
+    const homeTeam = getTeamOrThrow(teams, game.homeTeamId)
+    const awayTeamId = awayTeam.teamId
+    const homeTeamId = homeTeam.teamId
     const awayUser = latestAssignents[awayTeamId]?.discord_user
     const homeUser = latestAssignents[homeTeamId]?.discord_user
     const event: SnallabotEvent<ConfirmedSimV2> = { key: leagueId, event_type: "CONFIRMED_SIM", result: result, scheduleId: gameChannel.scheduleId, requestedUsers: requestedUsers, confirmedUsers: confirmedUsers, week: week, seasonIndex: season }
@@ -106,19 +108,25 @@ function createNotifier(client: DiscordClient, guildId: string, settings: League
     ping: async function(gameChannel: GameChannel, season: number, week: number) {
       const game = await MaddenDB.getGameForSchedule(leagueId, gameChannel.scheduleId, week, season)
       const teams = await MaddenDB.getLatestTeams(leagueId)
-      const awayTeam = teams.getTeamForId(game.awayTeamId)
-      const homeTeam = teams.getTeamForId(game.homeTeamId)
+      const awayTeam = getTeamOrThrow(teams, game.awayTeamId)
+      const homeTeam = getTeamOrThrow(teams, game.homeTeamId)
       const assignments = teams.getLatestTeamAssignments(settings.commands.teams?.assignments || {})
       const awayTag = formatTeamMessageName(assignments[`${awayTeam.teamId}`]?.discord_user?.id, awayTeam.userName)
       const homeTag = formatTeamMessageName(assignments[`${homeTeam.teamId}`]?.discord_user?.id, homeTeam.userName)
       await LeagueSettingsDB.updateGameChannelPingTime(guildId, week, season, gameChannel.channel)
       
-      // ✅ This section has been updated with your new message.
       const messageBody = `### ⏰ **Advance Schedule**
 
 • The league advances every **48 hours** between **9:00 PM - 10:00 PM EST**.
 • Your game must be in-progress before **9:59 PM EST** on advance night to avoid being simmed.
 • To request a delay, you must organize a league vote and get at least **17 'yes' votes**.
+
+### ⚠️ **Activity Tracking**
+
+• **FW/L, Sims, and Activity** are tracked to your profile.
+• Poor activity will penalize your **Reputation** and **AP**.
+• Inactive users will be **auto-kicked** from the league.
+• Use \`/nel profile\` to check your standing.
 
 ### 📜 **League Rules & Etiquette**
 
@@ -129,6 +137,7 @@ function createNotifier(client: DiscordClient, guildId: string, settings: League
       try {
         await client.createMessage(gameChannel.channel, `${awayTag} ${homeTag}\n\n${messageBody}`, ["users"])
       } catch (e) {
+        console.error(`❌ Failed to send ping message to channel ${gameChannel.channel.id}:`, e)
       }
     },
     update: async function(currentState: GameChannel, season: number, week: number) {
@@ -149,6 +158,7 @@ function createNotifier(client: DiscordClient, guildId: string, settings: League
           const exporter = await exporterForLeague(Number(leagueId), ExportContext.AUTO)
           await exporter.exportSpecificWeeks([{ weekIndex: week - 1, stage: Stage.SEASON }])
         } catch (e) {
+          console.error(`❌ Failed to export week ${week} for league ${leagueId}:`, e)
         }
         try {
           const game = await MaddenDB.getGameForSchedule(leagueId, currentState.scheduleId, week, season)
@@ -156,6 +166,7 @@ function createNotifier(client: DiscordClient, guildId: string, settings: League
             await this.deleteGameChannel(currentState, season, week, ggUsers)
           }
         } catch (e) {
+          console.error(`❌ Failed to check/delete game channel ${currentState.channel.id}:`, e)
         }
       }
       if (fwUsers.length > 0) {
@@ -170,7 +181,7 @@ function createNotifier(client: DiscordClient, guildId: string, settings: League
             await forceWin(result, requestedUsers, confirmedUsers, currentState, season, week)
             await this.deleteGameChannel(currentState, season, week, requestedUsers.concat(confirmedUsers))
           } catch (e) {
-
+            console.error(`❌ Failed to process force win for channel ${currentState.channel.id}:`, e)
           }
         } else if (currentState.state !== GameChannelState.FORCE_WIN_REQUESTED) {
           const adminRole = settings.commands.game_channel?.admin.id || ""
@@ -179,6 +190,7 @@ function createNotifier(client: DiscordClient, guildId: string, settings: League
           try {
             await client.createMessage(channelId, message, ["roles"])
           } catch (e) {
+            console.error(`❌ Failed to send force win request message to channel ${channelId.id}:`, e)
           }
         }
       } else if (scheduledUsers.length === 0 && currentState.state !== GameChannelState.FORCE_WIN_REQUESTED) {

@@ -16,6 +16,8 @@ import { GameResult, MaddenGame } from "../export/madden_league_types"
 import { leagueLogosView } from "../db/view"
 import { startAutoPostScheduler } from "./autopost_scheduler"
 import PickemDB from "./pickem_db"
+import { notifyGameResult } from "../twitch-notifier/game_result_notifier"
+import ProcessedGamesDB from "./processed_games_db"
 
 const router = new Router({ prefix: "/discord/webhook" })
 
@@ -67,12 +69,35 @@ async function handleInteraction(ctx: ParameterizedContext, client: DiscordClien
 
 type CommandsHandlerRequest = { commandNames?: string[], mode: CommandMode, guildId?: string }
 
+// Admin API secret for sensitive endpoints - must be set via env var
+const ADMIN_API_SECRET = process.env.ADMIN_API_SECRET
+if (!ADMIN_API_SECRET) {
+  console.warn("⚠️ ADMIN_API_SECRET not set - commandsHandler endpoint will be disabled for security")
+}
+
 router.post("/slashCommand", async (ctx) => {
   await handleInteraction(ctx, prodClient)
 }).post("/commandsHandler", async (ctx) => {
+  // Authentication required for command installation/deletion
+  if (!ADMIN_API_SECRET) {
+    ctx.status = 503
+    ctx.body = { error: "Endpoint disabled - ADMIN_API_SECRET not configured" }
+    return
+  }
+
+  const authHeader = ctx.request.headers["authorization"]
+  if (!authHeader || authHeader !== `Bearer ${ADMIN_API_SECRET}`) {
+    console.warn(`⚠️ Unauthorized commandsHandler request from ${ctx.request.ip}`)
+    ctx.status = 401
+    ctx.body = { error: "Unauthorized" }
+    return
+  }
+
   const req = ctx.request.body as CommandsHandlerRequest
+  console.log(`🔧 Authorized command operation: ${req.mode} commands=${req.commandNames?.join(",") || "all"} guild=${req.guildId || "global"}`)
   await commandsInstaller(prodClient, req.commandNames || [], req.mode, req.guildId)
   ctx.status = 200
+  ctx.body = { success: true }
 })
 EventDB.on<MaddenBroadcastEvent>("MADDEN_BROADCAST", async (events) => {
   events.map(async broadcastEvent => {
@@ -135,6 +160,7 @@ async function updateScoreboard(leagueSettings: LeagueSettings, guildId: string,
     const message = formatSchedule(week, seasonIndex, games, teams, sims, logos)
     await prodClient.editMessage(scoreboard_channel, scoreboard, message, [])
   } catch (e) {
+    console.error(`❌ Failed to update scoreboard for guild ${guildId}, week ${week}:`, e)
   }
 }
 
@@ -170,7 +196,7 @@ MaddenDB.on<MaddenGame>("MADDEN_SCHEDULE", async (events) => {
             try {
               await notifier.deleteGameChannel(channelState, season, week, [prodClient.getBotUser()])
             } catch (e) {
-
+              console.error(`❌ Failed to delete game channel ${channelState.channel.id}:`, e)
             }
           }
         }))
@@ -209,6 +235,51 @@ MaddenDB.on<MaddenGame>("MADDEN_SCHEDULE", async (events) => {
         } catch (e) {
           console.error(`❌ Error auto-scoring pick'em:`, e)
         }
+
+        // Notify NEL Utility Bot of NEW game completions only
+        try {
+          // Filter to only unprocessed games
+          const unprocessedGames = await ProcessedGamesDB.filterUnprocessedGames(leagueId, finishedGames)
+
+          if (unprocessedGames.length > 0) {
+            console.log(`🎮 Found ${unprocessedGames.length} NEW game completions to process`)
+            const teamsData = await MaddenDB.getLatestTeams(leagueId)
+
+            for (const game of unprocessedGames) {
+              const homeTeam = teamsData.getTeamForId(game.homeTeamId)
+              const awayTeam = teamsData.getTeamForId(game.awayTeamId)
+
+              if (homeTeam && awayTeam) {
+                // Send to NEL Utility Bot
+                await notifyGameResult({
+                  home_team: homeTeam.abbrName,
+                  away_team: awayTeam.abbrName,
+                  home_score: game.homeScore,
+                  away_score: game.awayScore,
+                  week_number: week,
+                  season: `Season ${season + 1}` // Convert 0-indexed to display (Season 2 = index 1)
+                })
+
+                // Mark as processed so we don't send again
+                await ProcessedGamesDB.markGameProcessed({
+                  leagueId,
+                  scheduleId: game.scheduleId,
+                  seasonIndex: season,
+                  weekIndex: finishedGame.weekIndex,
+                  homeTeam: homeTeam.abbrName,
+                  awayTeam: awayTeam.abbrName,
+                  homeScore: game.homeScore,
+                  awayScore: game.awayScore,
+                  processedAt: new Date()
+                })
+
+                console.log(`📡 Notified NEL Utility: ${awayTeam.abbrName} ${game.awayScore} @ ${homeTeam.abbrName} ${game.homeScore}`)
+              }
+            }
+          }
+        } catch (e) {
+          console.error(`❌ Error notifying NEL Utility Bot:`, e)
+        }
       }
     }))
   })
@@ -243,6 +314,7 @@ discordClient.on("guildMemberRemove", async (user, guild) => {
     try {
       await prodClient.editMessage(leagueSettings.commands.teams.channel, leagueSettings.commands.teams.messageId, message, [])
     } catch (e) {
+      console.error(`❌ Failed to update teams message after member ${user.id} left guild ${guildId}:`, e)
     }
   }
 });
@@ -271,6 +343,7 @@ discordClient.on("guildMemberUpdate", async (member, old) => {
     try {
       await prodClient.editMessage(leagueSettings.commands.teams.channel, leagueSettings.commands.teams.messageId, message, [])
     } catch (e) {
+      console.error(`❌ Failed to update teams message after role update for member ${member.id} in guild ${guildId}:`, e)
     }
   }
 });

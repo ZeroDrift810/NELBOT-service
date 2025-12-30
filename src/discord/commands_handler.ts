@@ -247,7 +247,8 @@ export async function handleMessageComponent(
   client: DiscordClient
 ) {
   const custom_id = interaction.custom_id;
-  console.log(`🔘 Message component interaction received: ${custom_id}`)
+  // Log interaction type without full custom_id to prevent log injection
+  console.log(`🔘 Message component interaction received (length=${custom_id?.length || 0})`)
   const handler = MessageComponents[custom_id];
   if (handler) {
     try {
@@ -302,14 +303,17 @@ export async function handleMessageComponent(
         ctx.set("Content-Type", "application/json");
         ctx.body = body;
       } else {
-        console.error(`❌ Unknown custom_id format:`, custom_id);
-        ctx.status = 500;
+        console.warn(`⚠️ Unknown custom_id format (length=${custom_id?.length || 0})`);
+        ctx.status = 400;
+        ctx.set("Content-Type", "application/json");
         ctx.body = { error: "Unknown interaction format" };
       }
     } catch (e) {
-      console.error(`❌ Error parsing custom_id:`, custom_id, e);
-      ctx.status = 500;
-      ctx.body = { error: "Failed to parse interaction" };
+      // Don't log full custom_id to avoid log injection - just log length
+      console.error(`❌ Error parsing custom_id (length=${custom_id?.length || 0}):`, e);
+      ctx.status = 400;
+      ctx.set("Content-Type", "application/json");
+      ctx.body = { error: "Invalid interaction format" };
     }
   }
 }

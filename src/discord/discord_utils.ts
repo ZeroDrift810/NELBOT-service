@@ -760,11 +760,12 @@ export function getTeamEmoji(teamAbbr: string, leagueCustomLogos: LeagueLogos): 
   const customLogo = leagueCustomLogos[teamAbbr]
   // Validate custom logo has proper emoji format:
   // - emoji_id must be a Discord snowflake (17-20 digit number)
-  // - emoji_name must be a valid Discord emoji name (letters, numbers, underscores, not just digits)
+  // - emoji_name must be a valid Discord emoji name (letters, numbers, underscores, 2-32 chars)
   if (customLogo && customLogo.emoji_name && customLogo.emoji_id) {
     const validId = /^\d{17,20}$/.test(customLogo.emoji_id)
     const validName = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(customLogo.emoji_name)
-    if (validId && validName) {
+    const validLength = customLogo.emoji_name.length >= 2 && customLogo.emoji_name.length <= 32
+    if (validId && validName && validLength) {
       return `<:${customLogo.emoji_name}:${customLogo.emoji_id}>`
     }
   }
